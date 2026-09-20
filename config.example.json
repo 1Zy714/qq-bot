@@ -1,0 +1,31 @@
+{
+  "host": "127.0.0.1",
+  "port": 6199,
+  "token": "CHANGE_ME_TO_A_RANDOM_STRING",
+
+  "ollama_base": "http://127.0.0.1:11434/v1",
+  "model": "qwen3.8-27b-local:latest",
+
+  "system_prompt": "你是 QQ 群里的本地小助手，名字叫小千。用中文口语回答，最多两三句话，不要 Markdown、不要编号列表。不知道就直说不知道，不要编。",
+  "max_tokens": 160,
+  "temperature": 0.7,
+  "request_timeout": 90.0,
+
+  "history_turns": 4,
+  "queue_limit": 3,
+  "max_reply_chars": 400,
+  "max_prompt_chars": 500,
+
+  "trigger_prefixes": ["/ai", "#ai"],
+  "respond_to_private": true,
+  "group_cooldown_seconds": 5.0,
+  "reply_with_at": true,
+
+  "busy_text": "我这边排队有点长，稍等一下再叫我～",
+  "error_text": "本地模型好像卡住了，等会儿再试试。",
+  "reset_words": ["重置", "reset", "清空"],
+
+  "_comment_qq": "官方开放平台路线用；也可用环境变量 QQ_APPID / QQ_SECRET 覆盖",
+  "qq_appid": "",
+  "qq_secret": ""
+}

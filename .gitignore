@@ -1,0 +1,22 @@
+# ---- 凭据：绝不提交 ----
+qq.env
+*.env
+config.json
+config.json.bak
+
+# ---- 运行数据与日志（含真实 openid / 会话内容）----
+*.log
+persona.state
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
