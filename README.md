@@ -68,6 +68,7 @@
 | `LEARNING.md` | 用本项目学 Python 的指南（知识点 → 真实行号、4 周路线、15 个练习） |
 | `DEPLOY.md` | 本机 AI 环境部署手册：DSH、本地模型、Qwen-Image-2.1 |
 | `QWEN-IMAGE-DEPLOY.md` | Qwen-Image-2.1 本地部署**完整实测记录**（ComfyUI + int8，含 7 个真实踩坑） |
+| `docs/MULTI-MODEL-GPU.md` | 单卡多模型编排：显存账本、让位 SOP、一次「生图成功但聊天报卡住」的故障复盘 |
 
 ---
 
