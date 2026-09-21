@@ -66,6 +66,7 @@
 | `OFFICIAL.md` | 官方开放平台路线说明 |
 | `AUTOCHAT.md` | 自动聊天方案（**仅设计**，未实现） |
 | `LEARNING.md` | 用本项目学 Python 的指南（知识点 → 真实行号、4 周路线、15 个练习） |
+| `DEPLOY.md` | 本机 AI 环境部署手册：DSH、本地模型、Qwen-Image-2.1 |
 
 ---
 
