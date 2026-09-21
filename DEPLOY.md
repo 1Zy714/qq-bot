@@ -2,9 +2,10 @@
 
 覆盖三条负载：**DSH**（Agent 宿主）、**本地大模型**（Ollama + Qwen）、**Qwen-Image-2.1**（本地生图）。
 
-> **本文的性质**：第 1、2 节基于**本机实际部署记录与实测数据**；第 3 节（Qwen-Image-2.1）
-> 发布于 2026-09-20，**本机尚未安装**，内容来自官方文档与实测评测，标注为「未验证」的部分
-> 请以实测为准。所有行号/版本均为编写时实测值（2026-09-21）。
+> **本文的性质**：第 1、2 节基于**本机实际部署记录与实测数据**。
+> 第 4 节（Qwen-Image-2.1）初稿按「未验证」编写，**但核实后发现该模型已于 2026-09-21
+> 在本机部署完成并全部验收通过**，因此第 4 节已改为结论摘要 + 指向完整实测文档
+> [`QWEN-IMAGE-DEPLOY.md`](QWEN-IMAGE-DEPLOY.md)。版本号与路径均为 2026-09-21 实测值。
 
 ---
 
@@ -20,7 +21,7 @@
 | 本地模型 | `qwen3.8-27b-local:latest`（Q4_K_M，17.44 GB） |
 | DSH | 源码检出 `~/project/deepseek-harness`，`@deepseek-ai/dsh-root 0.1.6-alpha.1`，已 build |
 | Python venv | `~/.venvs/qqbot`（httpx / websockets / botpy）、`~/.venvs/tools`（zstandard） |
-| **未安装** | PyTorch、ComfyUI、任何图像模型 |
+| 生图环境 | **已部署并验收**：`~/qwen-image/`（ComfyUI + int8 权重 17 GB + torch 2.14.0+cu130） |
 
 ---
 
@@ -33,7 +34,7 @@
 | 负载 | 占用 | 依据 |
 |---|---|---|
 | Qwen3.8-27B（Ollama，32768 上下文，KV q8_0） | **15790 / 16303 MiB** | 本机实测（`~/qwen/README.md`） |
-| Qwen-Image-2.1（7B，bf16，全管线常驻） | **估计 > 16 GB，需 CPU offload** | 官方未公布最低显存（未验证） |
+| Qwen-Image-2.1（7B，**int8 权重**，ComfyUI 分阶段换出） | 2K 峰值约 **14.1 GiB** | 本机实测（见 `QWEN-IMAGE-DEPLOY.md`） |
 | DSH Web / QQ 机器人进程本身 | ≈ 0（不碰 GPU） | 它们只是 HTTP 客户端 |
 
 结论：**27B 大模型和生图模型无法同时常驻**。DSH 和 QQ 机器人本身不吃显存，
@@ -322,10 +323,32 @@ grep -a "offloaded" ~/qwen/logs/ollama.log | tail -1    # 应显示 53/66 layers
 
 ---
 
-## 4. Qwen-Image-2.1 部署（未在本机验证）
+## 4. Qwen-Image-2.1 部署（**已在本机跑通**，完整记录见另文）
 
-> ⚠️ **本节尚未在本机跑通**。Qwen-Image-2.1 于 **2026-09-20** 发布，本机的 PyTorch、
-> ComfyUI、权重都还没装。下面给的是**可执行的步骤 + 明确的预期与风险**，不是实测记录。
+> ✅ **更正**：本节初稿写作「未在本机验证」，那是错的——该模型已于 **2026-09-21**
+> 在本机部署完成并全部验收通过。**完整的安装步骤、7 个真实踩坑与性能数据在
+> [`QWEN-IMAGE-DEPLOY.md`](QWEN-IMAGE-DEPLOY.md)**。本节只保留结论摘要与选型判断，
+> 避免同一事实在两处各自漂移；4.1 之后的安装细节若有出入，**一律以另文为准**。
+
+### 4.0 实测结论摘要
+
+| 项目 | 实测值 |
+|---|---|
+| 采用路线 | **ComfyUI + 官方 int8 权重**（不是 Diffusers，也不是 vLLM） |
+| 权重 | DiT int8 7.26 GB + 文本编码器 int8 9.35 GB + VAE 0.68 GB = **17.28 GB** |
+| 1024² / 25 步 | 采样 29 s；含加载首图 65 s |
+| **2048² / 25 步（原生 2K）** | 采样 **75 s**；含加载 85 s |
+| 显存峰值 | 2K 约 **14.1 GiB** |
+| RGBA 透明 | ✅ 实测 25.9% 全透明像素 |
+| torch | **2.14.0+cu130**，`arch_list` 含 `sm_120`，bf16 矩阵乘法通过 |
+
+**三个推翻直觉的结论**（论证见另文）：
+
+1. **16 GB 卡能跑满原生 2K** —— 前提是把 Windows 侧显存占用压下来，而不是必须降级 offload。
+2. **必须用 int8 权重**：文本编码器 bf16 一个组件就有 **17.5 GB**，**单独超过 16 GB 显存**。
+   可行原因是 ComfyUI 在「文本编码 → 采样 → VAE 解码」三阶段之间自动换出权重，
+   峰值只按单阶段最大者（≈9.4 GB）计算，而不是三者之和（17.3 GB）。
+3. **ModelScope 比 hf-mirror 快约 25 倍**（50.9 MB/s vs 2.0 MB/s），权重源应优先 ModelScope。
 
 ### 4.1 是什么
 
@@ -366,12 +389,11 @@ pip install -i https://pypi.tuna.tsinghua.edu.cn/simple 'transformers>=5.17'
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple 'git+https://github.com/huggingface/diffusers'
 ```
 
-> ⚠️ **这台机器的两个坑**：
-> 1. **`download.pytorch.org` 实测超时**（见 3.1），所以**不能**用
->    `pip install torch --index-url https://download.pytorch.org/whl/cu128`。
->    只能从 PyPI（或清华镜像）装。
-> 2. **RTX 5080 是 Blackwell（sm_120）**，需要 wheel 里有对应 kernel。
->    装完**必须验证**，否则会在推理时报
+> ✅ **实测更正（2026-09-21）** —— 这一段初稿的结论是错的：
+> 1. `download.pytorch.org` 确实不通，但**根本不需要绕**：清华 PyPI 的默认 wheel
+>    就是 `torch 2.14.0+cu130`，**已经支持 Blackwell**，不必加任何 `--index-url`。
+> 2. RTX 5080 是 sm_120，装完**仍然必须验证**（下面这段脚本实测通过），
+>    否则可能到推理时才报
 >    `no kernel image is available for execution on the device`：
 >
 >    ```bash
@@ -451,7 +473,7 @@ transparent = pipe(
 transparent.save("dragon-sticker.png")     # 必须存 PNG，JPEG 丢掉 alpha
 ```
 
-### 4.6 16 GB 单卡的现实预期（未验证）
+### 4.6 16 GB 单卡的现实预期（**已实测，原估算被推翻**）
 
 官方**没有公布最低显存**，因为它随精度、offload、量化方式大幅变化。
 按 7B 参数推算：仅 bf16 权重就约 **14 GB**，再加上文本编码器和 VAE，
@@ -459,7 +481,7 @@ transparent.save("dragon-sticker.png")     # 必须存 PNG，JPEG 丢掉 alpha
 
 | 策略 | 代价 |
 |---|---|
-| `enable_model_cpu_offload()` | 能用，但每步在 CPU/GPU 间搬运，**明显变慢** |
+| `enable_sequential_cpu_offload()` | **Diffusers 路线必须用这个**；`enable_model_cpu_offload()` 会直接 OOM（它整组件搬上卡，而编码器 bf16 就 17.5 GB） |
 | fp8 量化（vLLM-Omni 支持） | 省显存，质量需自行评估 |
 | 先降分辨率和步数做冒烟测试 | 验证环境的最快方式 |
 
@@ -469,8 +491,9 @@ transparent.save("dragon-sticker.png")     # 必须存 PNG，JPEG 丢掉 alpha
 ### 4.7 可选：ComfyUI 部署
 
 ```bash
-# ComfyUI 官方仓库（注意本机 GitHub 慢，建议走镜像或 -k）
-git clone https://github.com/comfyanonymous/ComfyUI.git
+# GitHub 直连在这台机器不通：实测走 gh-proxy 可用（codeload 亦可），
+# 且用单次 -c 绕过 MITM，不要改全局 git 配置
+git -c http.sslVerify=false clone https://gh-proxy.com/https://github.com/comfyanonymous/ComfyUI.git
 cd ComfyUI && pip install -r requirements.txt
 
 # 权重放这里
