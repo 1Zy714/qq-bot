@@ -26,6 +26,7 @@
 - [x] 依赖安装完成（ComfyUI 0.37.0 启动正常）
 - [x] 权重挂载（符号链接，未复制）
 - [x] **冒烟测试通过**：文生图 1K / 2K、原生 RGBA 透明、图像编辑
+- [x] **PE 提示词重写模型已装并验证**（T2I + I2I 各 9.47 GB，端到端出图成功）
 
 **实测性能（RTX 5080 Laptop 16GB + int8 权重）**
 
@@ -463,7 +464,65 @@ python3 ~/qwen-image/tools/edit_test.py dragon_sticker.png "Change the dragon's 
 
 ---
 
-## 10. 本次执行的踩坑记录（都是真实卡点，可复现）
+## 10. 提示词重写模型（PE）：已安装并验证 ✅
+
+官方 README 说「为获得最佳效果，推荐用 PE 模型把短提示词扩写成详细描述」。两个模型都装好了。
+
+| 模型 | 文件 | 大小 | sha256（前 16 位） | 实测 |
+|---|---|---|---|---|
+| PE-T2I | `qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors` | 9.47 GB | `9182abae56fe0545` | 8 词 → **3075 字符**，21 s |
+| PE-I2I | `qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors` | 9.47 GB | `32707d01b427e488` | 编辑指令规范化，9 s |
+
+### 10.1 接入方式（官方没写，是摸出来的）
+
+ComfyUI **没有** PE 专用节点，`CLIPLoader` 的 type 列表里也没有 PE 选项。
+线索来自官方模板 `llm_qwen3_5_text_gen.json`：Qwen3.5 系 LLM 是用
+`CLIPLoader(type="stable_diffusion")` 加载、再用 **`TextGenerate`** 节点生成文本的。
+PE 模型（Qwen3.5-VL 9B 微调）走同一条路，实测可用：
+
+```
+CLIPLoader(pe_t2i, type="stable_diffusion")
+      └──> TextGenerate(clip, prompt=短提示词, max_length=1024,
+                        sampling_mode="off", thinking=False, use_default_template=True)
+                 └──> TextEncodeQwenImage21.prompt      # 文生图
+```
+
+编辑重写则把参考图接到 `TextGenerate` 的可选 `image` 输入：
+
+```bash
+python3 ~/qwen-image/tools/pe_test.py t2i  "a corgi playing guitar in the rain"
+python3 ~/qwen-image/tools/pe_test.py edit "Change the dragon's color to blue." dragon_sticker.png
+
+# 端到端（重写 + 出图一条龙）
+python3 ~/qwen-image/tools/t2i_with_pe.py "a corgi playing guitar in the rain" 1024 1024 25
+```
+
+`sampling_mode="off"`（贪心）适合重写任务——要的是确定性，不是多样性。
+
+### 10.2 端到端实测
+
+`a corgi playing guitar in the rain`（8 个词）→ PE-T2I 扩写成 3075 字符
+（含被雨水打湿的柯基毛发、吉他音孔/琴弦/品丝、背景散景灯光、浅景深、雨丝方向）
+→ 生成 1024² 出图。**重写 + 生成合计 47 s。**
+
+### 10.3 三个使用注意点
+
+1. **`TextGenerate` 返回的是原始文本**，包含开头那句
+   `Here is a visual description of ...`。
+   官方的 `prompt_rewrite/` 代码会解析出结构化的 `rewritten_prompt` + `wh_ratio`，
+   走 ComfyUI 这条路没有这层解析——要么整段喂进去（能用），要么自己截掉首行。
+2. **PE-I2I 的输出以未闭合的 `</think>` 开头**，后面跟一个 JSON：
+   `{"action": "modify", "target": "dragon", "details": "..."}`。
+   喂给图像模型前建议剥掉 `</think>`；也可以只取 `details` 字段。
+3. **透明图的 alpha 会在 PE 视觉通路里变成紫色**。实测：输入是透明背景的贴纸 PNG，
+   PE-I2I 生成的重写指令里写的是「保持紫色背景不变」——因为视觉塔看到的是紫底。
+   `TextEncodeQwenImage21` 内部会把 alpha 合成到白底
+   （`rgb = rgb*alpha + (1-alpha)`），但 `LoadImage → TextGenerate` 这条支路没有。
+   **要在透明贴纸上做编辑，先把 alpha 合成到白底再传。**
+
+---
+
+## 11. 本次执行的踩坑记录（都是真实卡点，可复现）
 
 ### 10.1 GitHub 直连不通，但 codeload 与 gh-proxy 通
 
@@ -546,7 +605,7 @@ size shifts the edit.」→ **编辑时 `KSampler.latent_image` 要接它**，�
 
 ---
 
-## 11. 参考来源
+## 12. 参考来源
 
 - 官方仓库（含 Day-0 支持与架构说明）：https://github.com/QwenLM/Qwen-Image-2.1
 - 模型卡：https://huggingface.co/Qwen/Qwen-Image-2.1
