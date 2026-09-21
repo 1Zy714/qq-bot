@@ -2,10 +2,16 @@
 qq.env
 *.env
 config.json
-config.json.bak
+config.json.bak*
+#   ↑ 通配 backup 后缀。原先只写死 `config.json.bak`，
+#     带时间戳的备份（config.json.bak-YYYYmmdd-HHMMSS）会漏网，
+#     而它同样内含 OneBot token。
 
 # ---- 运行数据与日志（含真实 openid / 会话内容）----
 *.log
+*.log.*
+*.log-*
+#   ↑ 轮转日志，如 botpy.log.2026-09-18 —— `*.log` 盖不住它
 persona.state
 
 # ---- Python ----
