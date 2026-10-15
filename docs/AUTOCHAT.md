@@ -1,8 +1,11 @@
 # 自动聊天（官方开放平台路线）· 方案
 
-> **范围**：本文只做设计，**不改任何代码**。路线固定为 `official_bot.py`（QQ 开放平台 + botpy，WebSocket 模式）。
-> **编写时状态**：`bash svc.sh status` 显示 napcat / official / ollama 三者均未运行；文中"代码扩展点"基于当前工作区实际文件。
-> 平台规则核对日期：2026-09-20。
+> **状态（2026-10-15 更新）**：形态①（群内接话）与形态②（定时主动发言）**已实现**，
+> 落在 `official_bot.py` 的 `AutoChatPolicy` / `AutoChatState` / `AutoChatScheduler`，
+> 默认全关（`auto_chat.enabled=false`，关闭时行为与本文件编写前完全一致）。
+> 决策层是可离线单测的纯函数：`test_autochat_policy.py`（38 项断言）。
+> **范围**：路线固定为 `official_bot.py`（QQ 开放平台 + botpy，WebSocket 模式）。
+> 平台规则核对日期：2026-09-20；**2026-10-15 复核**主动消息频控与全量消息事件（结论未变）。
 
 ---
 
@@ -208,7 +211,62 @@ on_ready ──▶ asyncio.create_task(scheduler)
 
 ---
 
-## 9. 参考来源
+## 9. 实现说明（2026-10-15 落地）
+
+### 9.1 代码结构与第 4 节的对应关系
+
+| 第 4 节的要求 | 实际落地 |
+|---|---|
+| `AutoChatPolicy` 纯函数 | `official_bot.py` 的 `AutoChatPolicy.decide()`，只依赖注入的 `rng` / `clock` |
+| `AutoChatScheduler`（`on_ready` 里起 task） | `AutoChatScheduler.start()`，由 `QQBotClient.on_ready` 调用；`_tick` 按 `schedule` 的 `HH:MM` 触发 |
+| 新增 `on_group_msg_receive` / `on_group_msg_reject` | 已加：前者把群记进主动消息白名单，后者拉黑，避免白发 |
+| `config.json` 新增 `auto_chat` 块 | 已加（`config.json` + `config.example.json`），默认 `enabled=false` / `dry_run=true` |
+| 单测不连网关 | `test_autochat_policy.py`，纯离线，秒级跑完 |
+
+### 9.2 与本文件设计的两处偏差（都是刻意的）
+
+1. **`auto=True` 会屏蔽人格指令与出图**。全量模式下群里任何人打一句「人格 xxx」
+   就能改机器人人设、一句「画一只猫」就能把显卡抱走几十秒——自动接话这条路
+   必须绕开 `Responder.answer` 的这两个分支。真人 @ 和私聊不受影响。
+2. **自动接话不回「忙」**。`busy_text` 是给真人看的；自动任务在模型忙时直接放弃，
+   既不排队也不发言，这就是第 5 节说的"优先级低于真人消息"。
+
+另外 `Responder.answer` 的 `auto=True` 分支里，模型报错也**完全静默**——
+`error_text` 同样不该出现在群里。
+
+### 9.3 决策顺序（`decide()` 的真实实现）
+
+```
+闸门：enabled → reply_mode → 白名单 → 静默时段 → 当日额度 → 冷却 → 文本长度
+  ↓ 全过
+必答：@（reply_when_mentioned）→ 关键词 → 问号结尾（默认关）
+  ↓ 都没中
+概率：rng() < probability
+```
+
+闸门放在最前面：既不浪费随机数，也保证"冷却中的群"不会被必答词击穿。
+命中层记在日志的 `reason` / `layer` 字段里，调参时直接 `grep '\[qq\]\[auto\]'`。
+
+### 9.4 开关位置的更正（重要）
+
+本文件第 6 节第 1 步的路径是对的，但早期文档（`GROUP-REPLY.md`）写的
+"开放平台后台 → 接收所有消息"**是错的**，那里没有这一项。正确路径：
+
+**手机 QQ → 群设置 → 机器人设置 → 「机器人可获取的群聊消息范围」= 获取群内全部消息**
+（要主动发言再加开「机器人主动在群聊内发言」）
+
+判断有没有生效：`grep '全量群消息\|\[qq\]\[auto\]' ~/qq-bot/botpy.log`。
+一条都没有 = 开关没开，代码在空转。
+
+### 9.5 顺手修掉的 bug
+
+`official_bot.py` 的 `_harvest_stickers()` 用了 `MAX_STICKER_BYTES` 但
+**从未从 `sticker_lib` 导入它**，于是每次收藏表情包都抛 `NameError`，
+被外层 `except Exception` 吞掉，只留下一行"收藏表情包失败"。
+后果：官方路线的表情包自动收集**从来没成功过**（日志里"收进表情库"0 次、
+"收藏表情包失败"3 次）。已补上导入。
+
+## 10. 参考来源
 
 - [QQ 机器人 · 消息收发概述](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/overview.html)（主动/被动消息、频控表、互动召回）
 - [QQ 机器人 · 发送消息（send.md）](https://raw.githubusercontent.com/tencent-connect/bot-docs/master/docs/develop/api-v2/server-inter/message/send-receive/send.md)（2025-04-21 主动推送下线告示）

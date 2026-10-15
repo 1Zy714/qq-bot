@@ -25,7 +25,7 @@ OLLAMA_LIB="$HOME/qwen/runtime/ollama/lib/ollama/llama-server"
 OLLAMA_URL="http://127.0.0.1:11434"
 
 script_of() { case "$1" in napcat) echo "$HERE/bot.py" ;; official) echo "$HERE/official_bot.py" ;; *) return 1 ;; esac; }
-log_of() { case "$1" in napcat) echo "$HERE/bot.log" ;; official) echo "$HERE/official.log" ;; *) return 1 ;; esac; }
+log_of() { case "$1" in napcat) echo "$HERE/logs/bot.log" ;; official) echo "$HERE/logs/official.log" ;; *) return 1 ;; esac; }
 env_of() { case "$1" in official) echo "$HERE/qq.env" ;; *) echo "" ;; esac; }
 
 # 用法: pids_of <脚本绝对路径>
@@ -34,26 +34,44 @@ pids_of() {
   for dir in /proc/[0-9]*; do
     pid="${dir#/proc/}"
     [ "$pid" = "$$" ] && continue
+    [ -d "$dir" ] || continue
     [ -r "$dir/cmdline" ] || continue
     cmd="$(tr '\0' ' ' < "$dir/cmdline" 2>/dev/null)" || continue
     case "$cmd" in *"$script"*) ;; *) continue ;; esac
     exe="$(readlink -f "$dir/exe" 2>/dev/null || true)"
-    case "$exe" in *python*) echo "$pid" ;; esac
+    case "$exe" in
+      *python*) echo "$pid" ;;
+      # readlink on /proc/PID/exe can fail (sandboxed / restricted /proc, and
+      # some WSL setups). Fall back to the command line so status/stop still work.
+      *) case "$cmd" in *python*) echo "$pid" ;; esac ;;
+    esac
   done
 }
 
 # ollama 服务进程 + 它拉起的 llama-server 子进程。
-# 判据用「可执行文件路径」而不是命令行文本：ollama 可能是用 `ollama serve`
-# 这种相对名字启动的（cmdline 里没有绝对路径），而 exe 始终指向真实二进制；
-# 同时调用者的 exe 是 bash/python，永远不在这个目录里，不会误伤。
+# 判据优先用「可执行文件路径」：ollama 可能是用 `ollama serve` 这种相对名字启动的
+# （cmdline 里没有绝对路径），而 exe 始终指向真实二进制。
+# 但 exe 在受限 /proc（沙箱、部分 WSL 设置）下解析为空，所以补两条命令行回退，
+# 且都以绝对路径为准，避免命中正在执行本脚本的 shell 自己（自杀事故的老坑）。
 ollama_pids() {
-  local pid dir exe
+  local pid dir exe cmd
   for dir in /proc/[0-9]*; do
     pid="${dir#/proc/}"
     [ "$pid" = "$$" ] && continue
+    [ -d "$dir" ] || continue
+    [ -r "$dir/cmdline" ] || continue
     exe="$(readlink -f "$dir/exe" 2>/dev/null || true)"
+    cmd="$(tr '\0' ' ' < "$dir/cmdline" 2>/dev/null || true)"
     case "$exe" in
       *"/qwen/runtime/ollama/"*) echo "$pid" ;;
+      *)
+        case "$cmd" in
+          # llama-server 子进程：命令行为绝对路径启动
+          *"/qwen/runtime/ollama/"*) echo "$pid" ;;
+          # `ollama serve` 父进程：命令行里没有路径，用「整条命令恰好是它」来锁死
+          "ollama serve"|"ollama serve "*) echo "$pid" ;;
+        esac
+        ;;
     esac
   done
 }

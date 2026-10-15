@@ -9,7 +9,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")"
 VENV="${VENV:-$HOME/.venvs/qqbot}"
-LOG="$HOME/qq-bot/bot.log"
+LOG="$HOME/qq-bot/logs/bot.log"
 FOREGROUND=0
 ARGS=()
 

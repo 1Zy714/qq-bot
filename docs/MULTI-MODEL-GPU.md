@@ -3,7 +3,7 @@
 > 适用场景：**一张 16 GB 显卡**要交替服务两类负载——本地大模型（QQ 机器人、DSH Agent）
 > 与图像生成（Qwen-Image-2.1）。
 > 本文所有数字来自本机实测（2026-09-21），日志片段为原文摘录。
-> 相关文档：[`../DEPLOY.md`](../DEPLOY.md)（环境部署）、[`../QWEN-IMAGE-DEPLOY.md`](../QWEN-IMAGE-DEPLOY.md)（生图部署）、`~/qwen/README.md`（本地模型部署）。
+> 相关文档：[`DEPLOY.md`](DEPLOY.md)（环境部署）、[`QWEN-IMAGE-DEPLOY.md`](QWEN-IMAGE-DEPLOY.md)（生图部署）、`~/qwen/README.md`（本地模型部署）。
 
 ---
 
@@ -360,6 +360,6 @@ except Exception: print('未运行')"
   - `comfy/cli_args.py:169`（`--highvram` 默认行为）、`:192`（`--disable-smart-memory`）
   - `server.py:1195-1204`（`/free` 接口）、`main.py:387-394`（标志处理）
   - `comfy/model_management.py:219-221`（no-op 注释）、`:2121`（`unload_all_models`）
-- [`../DEPLOY.md`](../DEPLOY.md) 第 1 节（显存预算与切换流程）
-- [`../QWEN-IMAGE-DEPLOY.md`](../QWEN-IMAGE-DEPLOY.md)（生图部署与实测性能）
+- [`DEPLOY.md`](DEPLOY.md) 第 1 节（显存预算与切换流程）
+- [`QWEN-IMAGE-DEPLOY.md`](QWEN-IMAGE-DEPLOY.md)（生图部署与实测性能）
 - `~/qwen/README.md`（本地模型实测占用与性能基线）

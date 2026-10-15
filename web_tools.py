@@ -16,8 +16,9 @@ from __future__ import annotations
 import html
 import json
 import re
+from html import unescape
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 # 搜索引擎要求像浏览器；不带 UA 会被 302 到验证页。
 USER_AGENT = (
@@ -26,7 +27,13 @@ USER_AGENT = (
 )
 NEWS_BASE = "https://60s.viki.moe/v2"
 SEARCH_URL = "https://cn.bing.com/search"
+BING_IMAGES = "https://cn.bing.com/images/search"
 FETCH_TIMEOUT = 12.0
+
+# 表情包下载上限：先按 Content-Length 预判，避免把大图拉进内存
+STICKER_MAX_BYTES = 2 * 1024 * 1024
+STICKER_LIMIT = 3          # 一次最多入库几张，防止一轮工具调用刷爆库
+STICKER_TIMEOUT = 15.0
 
 # 工具描述里明确"什么时候用"，否则小模型会拿它去查"你好"这种寒暄。
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -65,6 +72,27 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {"query": {"type": "string", "description": "搜索关键词，尽量具体"}},
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_sticker",
+            "description": (
+                "从网上找表情包，下载进本地表情包库。只在想发一个本地库没有、"
+                "或更贴合当前话题的表情包时调用。返回找到几张之后，你必须再用 "
+                "[表情:关键词] 把它发出去，否则用户看不到任何图。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "表情包的搜索词，2~6 个字，例如「猫猫开心」「无语」「比心」",
+                    }
+                },
+                "required": ["keyword"],
             },
         },
     },
@@ -142,13 +170,122 @@ async def web_search(client: Any, args: dict[str, Any] | None = None) -> str:
     return f"{UNTRUSTED_NOTE}\n搜索「{query}」的结果：\n{lines}"
 
 
-async def run_tool(name: str, args: dict[str, Any], client: Any) -> str:
+def _bing_image_urls(page: str) -> list[str]:
+    """从 Bing 图片搜索页里抠出图片直链。
+
+    结果页把每条结果塞在 ``m="{"murl":"https://..."}"`` 里，是 JSON 片段。
+    先还原实体（``&quot;`` → ``"``），再交给 json 解析，比正则抠 URL 稳。
+    """
+    urls: list[str] = []
+    for raw in re.findall(r'm="(\{[^"]*?murl[^"]*?\})"', page):
+        try:
+            data = json.loads(unescape(raw))
+        except (ValueError, TypeError):
+            continue
+        url = str(data.get("murl") or data.get("turl") or "").strip()
+        if url.startswith("http"):
+            urls.append(url)
+    # 去重但保持顺序
+    seen: set[str] = set()
+    return [u for u in urls if not (u in seen or seen.add(u))]
+
+
+async def _download_image(client: Any, url: str) -> bytes | None:
+    """下载一张图，带体积预判。失败返回 None，不抛异常。"""
+    try:
+        response = await client.get(
+            url, timeout=STICKER_TIMEOUT,
+            headers={"User-Agent": USER_AGENT, "Referer": "https://cn.bing.com/"},
+        )
+        if response.status_code != 200:
+            return None
+        declared = response.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > STICKER_MAX_BYTES:
+            return None
+        data = response.content or b""
+        if not data or len(data) > STICKER_MAX_BYTES:
+            return None
+        return data
+    except Exception:
+        return None
+
+
+async def search_sticker(
+    client: Any, args: dict[str, Any] | None = None, sticker: Any = None
+) -> str:
+    """联网搜表情包 → 下载 → 入库并打上关键词标签。
+
+    为什么要打标签：本地库是空的、自动收集来的也没标签，模型无从选择。
+    把搜索关键词直接当标签打上去，模型随后就能用 ``[表情:关键词]`` 引用它。
+    """
+    args = args or {}
+    keyword = str(args.get("keyword") or "").strip()
+    if not keyword:
+        return "需要提供关键词才能搜索表情包。"
+    if sticker is None:
+        return "表情包库未就绪，无法联网找图。"
+
+    try:
+        response = await client.get(
+            BING_IMAGES,
+            params={"q": f"{keyword} 表情包", "form": "HDRSC2", "first": "1"},
+            headers={"User-Agent": USER_AGENT},
+            timeout=FETCH_TIMEOUT,
+        )
+        response.raise_for_status()
+        page = response.text
+    except Exception as error:
+        return f"搜索表情包失败：{type(error).__name__}"
+
+    urls = _bing_image_urls(page)
+    if not urls:
+        return f"没找到「{keyword}」的表情包。"
+
+    saved = 0
+    for url in urls[: STICKER_LIMIT * 3]:
+        if saved >= STICKER_LIMIT:
+            break
+        data = await _download_image(client, url)
+        if not data:
+            continue
+        # 按文件头判断真实格式：URL 后缀经常是假的（xxx.jpg 实际返回 PNG）
+        content_type, _ext = type(sticker).sniff_format(data)
+        if not content_type:
+            continue  # 不是能识别的图片格式
+        # collect() 内还有一道体积/尺寸过滤
+        result = sticker.collect(
+            data, content_type=content_type, filename=url.rsplit("/", 1)[-1],
+            source=f"web:{keyword}",
+        )
+        if result is None:
+            continue
+        # 关键词直接当标签，模型随后就能用 [表情:关键词] 引用到这张图
+        sticker.add_tags([keyword], sha1=result.sha1)
+        saved += 1
+
+    if not saved:
+        return f"找到「{keyword}」的图，但都不适合当表情包（太大或不是图片）。"
+
+    return (
+        f"已找到并收藏 {saved} 张「{keyword}」表情包。"
+        f"现在用 [表情:{keyword}] 把它发给用户。"
+    )
+
+
+async def run_tool(
+    name: str, args: dict[str, Any], client: Any, sticker: Any = None
+) -> str:
     """按名字执行工具；未知工具或执行失败都返回一句可读文本，不抛异常。"""
     handlers = {
         "get_daily_news": get_daily_news,
         "get_hot_topics": get_hot_topics,
         "web_search": web_search,
     }
+    if name == "search_sticker":
+        try:
+            return await search_sticker(client, args, sticker)
+        except Exception as error:  # 工具失败不该让整条回复崩掉
+            return f"工具 {name} 调用失败：{type(error).__name__}"
     handler = handlers.get(name)
     if handler is None:
         return f"没有名为 {name} 的工具。"
@@ -163,11 +300,15 @@ async def chat_with_tools(
     cfg: Any,
     messages: list[dict[str, Any]],
     max_rounds: int = 2,
+    sticker: Any = None,
 ) -> str:
     """带工具的一轮对话：模型要调用工具就执行，把结果回灌后再让它作答。
 
     返回模型最终的正文（未清洗）。``max_rounds`` 是允许的最大工具轮数，
     最后一轮不再传 ``tools``，强制模型给出最终答复。
+
+    ``sticker`` 是表情包库；``search_sticker`` 工具靠它把网上的图存下来。
+    传 None 时该工具会回一句"未就绪"，其它工具照常可用。
     """
     convo: list[dict[str, Any]] = list(messages)
     url = str(cfg.ollama_base).rstrip("/") + "/chat/completions"
@@ -209,7 +350,7 @@ async def chat_with_tools(
                     parsed = {}
             else:
                 parsed = raw or {}
-            result = await run_tool(str(function.get("name") or ""), parsed, client)
+            result = await run_tool(str(function.get("name") or ""), parsed, client, sticker)
             convo.append(
                 {
                     "role": "tool",

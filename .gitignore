@@ -14,6 +14,23 @@ config.json.bak*
 #   ↑ 轮转日志，如 botpy.log.2026-09-18 —— `*.log` 盖不住它
 persona.state
 
+# ---- 长期记忆档案（user_memory.py 落盘）----
+memory/
+#   ↑ 按 openid 记住每个人的昵称、发言次数与印象，
+#     属于真实个人数据，性质等同日志，绝不提交。想清空直接删目录。
+
+# ---- 表情包库：从群聊自动收集的图片 ----
+stickers/files/
+stickers/index.json
+#   ↑ 机器人会把群里的 gif/小图自动收进库。虽然是表情包，
+#     但来源是真实群聊（可能混进群友照片），且属于运行数据而非代码。
+#     只忽略内容与索引，保留目录本身；想连目录一起挡就写 `stickers/`。
+
+# ---- 本地备份（config.json 的备份含 OneBot token）----
+backups/
+#   ↑ README 一直声称「backups 已被 .gitignore 挡住」，此前其实只挡住了
+#     `config.json.bak*`，`backups/official_bot.py.*.bak` 之类的仍会被提交。
+
 # ---- Python ----
 __pycache__/
 *.py[cod]
