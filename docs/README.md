@@ -52,6 +52,7 @@
 | [USAGE.md](USAGE.md) | **使用说明**：启停三条命令、怎么改人设、行为参数表、故障排查表、文件地图 |
 | [STRATA-DEPLOY.md](STRATA-DEPLOY.md) | **本地模型部署**：Qwen3.8-Flash-Next（125B）完整过程 + 10 条踩坑 |
 | [STRATA-PROGRESS.md](STRATA-PROGRESS.md) | 部署当晚的暂停快照（留档） |
+| [`../deploy/`](../deploy/README.md) | **部署脚本集**：显存互斥切换、模型 / 画图启动脚本、换机重建顺序 |
 
 ### 仓库外的相关文件
 
