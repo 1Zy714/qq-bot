@@ -16,6 +16,7 @@ from __future__ import annotations
 import html
 import json
 import re
+from datetime import datetime
 from html import unescape
 from typing import Any
 from urllib.parse import quote_plus, urlparse
@@ -25,10 +26,32 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
-NEWS_BASE = "https://60s.viki.moe/v2"
 SEARCH_URL = "https://cn.bing.com/search"
 BING_IMAGES = "https://cn.bing.com/images/search"
 FETCH_TIMEOUT = 12.0
+
+# 微博热搜官方接口（无需 key）。2026-10-17 新增：原来的 60s.viki.moe 已失效
+# （任何请求都返回 Cloudflare 1027），新闻/热榜两个工具因此一直是坏的。
+WEIBO_HOT = "https://weibo.com/ajax/side/hotSearch"
+WEIBO_HEADERS = {"User-Agent": USER_AGENT, "Referer": "https://weibo.com/"}
+
+# 天气：open-meteo，免费且无需 key；城市名先经它的 geocoding 换成经纬度。
+GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+
+# WMO 天气代码 → 中文（open-meteo 用这套代号）
+WMO_CODES = {
+    0: "晴", 1: "大致晴朗", 2: "多云", 3: "阴",
+    45: "有雾", 48: "雾凇",
+    51: "毛毛雨", 53: "小雨", 55: "中雨",
+    56: "冻毛毛雨", 57: "冻雨",
+    61: "小雨", 63: "中雨", 65: "大雨",
+    66: "冻雨", 67: "强冻雨",
+    71: "小雪", 73: "中雪", 75: "大雪", 77: "雪粒",
+    80: "阵雨", 81: "强阵雨", 82: "暴雨",
+    85: "阵雪", 86: "强阵雪",
+    95: "雷阵雨", 96: "雷阵雨夹冰雹", 99: "强雷暴伴冰雹",
+}
 
 # 表情包下载上限：先按 Content-Length 预判，避免把大图拉进内存
 STICKER_MAX_BYTES = 2 * 1024 * 1024
@@ -41,7 +64,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_daily_news",
-            "description": "获取今天的最新新闻摘要。只在用户问新闻、时事、今天发生了什么时调用。",
+            "description": "获取今天的新闻与热点要闻。聊到时事、新闻、社会热点、今天发生了什么时都可以调用——你自己并不知道今天发生了什么，别凭记忆编。",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -49,7 +72,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_hot_topics",
-            "description": "获取某个平台的实时热搜榜。只在用户问热搜、热榜、大家在讨论什么时调用。",
+            "description": "获取平台的实时热搜榜。聊到热搜、热榜、大家在讨论什么、某个梗为什么火时都可以调用。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -67,7 +90,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "搜索引擎查资料。只在需要最新信息、或你确实不知道的事实时调用；能直接回答的常识不要调用。",
+            "description": "搜索引擎查资料。凡是不确定的事实（人物、事件、产品、价格、赛程、政策、名词、梗的来历）都应该先查再答，不要凭记忆猜；只有纯闲聊和常识才不用。",
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string", "description": "搜索关键词，尽量具体"}},
@@ -78,11 +101,40 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_weather",
+            "description": (
+                "查某个城市的实时天气和今日气温。聊到天气、出门、穿衣、下雨、"
+                "要不要带伞时都应该调用，不要凭感觉猜。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string", "description": "城市名，例如「北京」「杭州」"}
+                },
+                "required": ["city"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": (
+                "获取当前的日期、时间与星期。被问「今天几号」「现在几点」「今天周几」，"
+                "或你需要知道当前时间时调用；你自己没有时间概念。"
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "search_sticker",
             "description": (
-                "从网上找表情包，下载进本地表情包库。只在想发一个本地库没有、"
-                "或更贴合当前话题的表情包时调用。返回找到几张之后，你必须再用 "
-                "[表情:关键词] 把它发出去，否则用户看不到任何图。"
+                "从网上找表情包，下载进本地表情包库。**鼓励经常使用**：只要当前话题"
+                "能找到更贴切、更新鲜的表情包，就先搜一搜再发；本地库标签不够贴合时"
+                "更应该用。返回找到几张之后，你必须再用 [表情:关键词] 把它发出去，"
+                "否则用户看不到任何图。"
             ),
             "parameters": {
                 "type": "object",
@@ -116,32 +168,109 @@ async def _get_json(client: Any, url: str) -> Any:
     return response.json()
 
 
+async def _weibo_hot(client: Any, limit: int = 10) -> list[str]:
+    """微博实时热搜标题（官方接口，无需 key）。取不到就抛异常，由调用方兜底。"""
+    response = await client.get(WEIBO_HOT, timeout=FETCH_TIMEOUT, headers=WEIBO_HEADERS)
+    response.raise_for_status()
+    payload = response.json()
+    items = ((payload.get("data") or {}).get("realtime")) or []
+    titles = []
+    for item in items:
+        word = str(item.get("word") or item.get("note") or "").strip()
+        if word:
+            titles.append(word)
+    return titles[:limit]
+
+
 async def get_daily_news(client: Any, _args: dict[str, Any] | None = None) -> str:
-    """今天的新闻摘要。"""
-    payload = await _get_json(client, f"{NEWS_BASE}/60s")
-    data = payload.get("data") or {}
-    news = [str(item) for item in (data.get("news") or [])][:8]
-    if not news:
-        return "没有取到今日新闻。"
-    lines = "\n".join(f"{index}. {item}" for index, item in enumerate(news, start=1))
-    return f"{UNTRUSTED_NOTE}\n{data.get('date', '今天')} 新闻摘要：\n{lines}"
+    """今天的要闻。
+
+    原来读 60s.viki.moe 的「每天 60 秒」，该源 2026-10-17 起对所有请求返回
+    Cloudflare 1027（站点级封锁），所以改为直接读微博热搜官方接口；
+    取不到再退回 Bing 搜索。
+    """
+    try:
+        titles = await _weibo_hot(client, limit=10)
+    except Exception:
+        titles = []
+    if titles:
+        lines = "\n".join(f"{index}. {title}" for index, title in enumerate(titles, start=1))
+        return f"{UNTRUSTED_NOTE}\n今日热点要闻（微博热搜实时）：\n{lines}"
+    return await web_search(client, {"query": f"{datetime.now():%Y-%m-%d} 今日要闻"})
 
 
 async def get_hot_topics(client: Any, args: dict[str, Any] | None = None) -> str:
-    """某个平台的实时热榜。"""
+    """实时热榜。微博走官方接口；头条/抖音没有稳定的免费接口，退回搜索兜底。"""
     platform = str((args or {}).get("platform") or "weibo").lower()
     if platform not in ("weibo", "toutiao", "douyin"):
         platform = "weibo"
     label = {"weibo": "微博热搜", "toutiao": "今日头条热榜", "douyin": "抖音热榜"}[platform]
-    payload = await _get_json(client, f"{NEWS_BASE}/{platform}")
-    items = payload.get("data") or []
-    if isinstance(items, dict):
-        items = items.get("list") or []
-    titles = [str(item.get("title", "")).strip() for item in items if item.get("title")][:8]
-    if not titles:
-        return f"没有取到{label}。"
-    lines = "\n".join(f"{index}. {title}" for index, title in enumerate(titles, start=1))
-    return f"{UNTRUSTED_NOTE}\n{label}（实时）：\n{lines}"
+
+    if platform == "weibo":
+        titles = await _weibo_hot(client, limit=10)
+        if not titles:
+            return f"没有取到{label}。"
+        lines = "\n".join(f"{index}. {title}" for index, title in enumerate(titles, start=1))
+        return f"{UNTRUSTED_NOTE}\n{label}（实时）：\n{lines}"
+
+    return await web_search(client, {"query": f"{label} 今天"})
+
+
+async def get_weather(client: Any, args: dict[str, Any] | None = None) -> str:
+    """某个城市的实时天气与今日气温（open-meteo，免费且无需 key）。"""
+    city = str((args or {}).get("city") or "").strip()
+    if not city:
+        return "需要提供城市名，例如「北京」。"
+    try:
+        geo = await _get_json(
+            client,
+            f"{GEOCODE_URL}?name={quote_plus(city)}&count=1&language=zh&format=json",
+        )
+        results = geo.get("results") or []
+        if not results:
+            return f"没找到城市「{city}」，换个写法再试（例如「杭州」）。"
+        place = results[0]
+        name = str(place.get("name") or city)
+        admin = str(place.get("admin1") or "")
+        forecast = await _get_json(
+            client,
+            f"{WEATHER_URL}?latitude={place.get('latitude')}&longitude={place.get('longitude')}"
+            "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m"
+            "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+            "&timezone=Asia%2FShanghai&forecast_days=1",
+        )
+    except Exception as error:
+        return f"查天气失败：{type(error).__name__}"
+
+    cur = forecast.get("current") or {}
+    daily = forecast.get("daily") or {}
+    code = cur.get("weather_code")
+    desc = WMO_CODES.get(int(code), "未知") if code is not None else "未知"
+    where = f"{name}·{admin}" if admin and admin != name else name
+    parts = [
+        f"{where} 现在{desc}，气温 {cur.get('temperature_2m')}°C",
+        f"体感 {cur.get('apparent_temperature')}°C，湿度 {cur.get('relative_humidity_2m')}%",
+        f"风速 {cur.get('wind_speed_10m')} km/h",
+    ]
+    tmax = (daily.get("temperature_2m_max") or [None])[0]
+    tmin = (daily.get("temperature_2m_min") or [None])[0]
+    rain = (daily.get("precipitation_probability_max") or [None])[0]
+    if tmax is not None and tmin is not None:
+        day = f"今日气温 {tmin}~{tmax}°C"
+        if rain is not None:
+            day += f"，降水概率 {rain}%"
+        parts.append(day)
+    return f"{UNTRUSTED_NOTE}\n" + "；".join(parts) + "。"
+
+
+async def get_current_time(client: Any = None, _args: dict[str, Any] | None = None) -> str:
+    """当前的日期、时间与星期（本地时区）。
+
+    机器人自己没有时间感——不查就会把「今天」说错，所以问日期时间一律走这里。
+    """
+    now = datetime.now()
+    week = "一二三四五六日"[now.weekday()]
+    return f"现在是 {now:%Y年%m月%d日 %H:%M}（周{week}）。"
 
 
 async def web_search(client: Any, args: dict[str, Any] | None = None) -> str:
@@ -280,6 +409,8 @@ async def run_tool(
         "get_daily_news": get_daily_news,
         "get_hot_topics": get_hot_topics,
         "web_search": web_search,
+        "get_weather": get_weather,
+        "get_current_time": get_current_time,
     }
     if name == "search_sticker":
         try:

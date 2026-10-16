@@ -3,13 +3,17 @@
 
 为什么要显存互斥——本机 16 GB 显存装不下两个模型：
 
-* Ollama 聊天模型（Qwen3.8-27B Q4_K_M）常驻约 **15.8 GB**
-* Qwen-Image-2.1 出图峰值约 **14.1 GB**
+* 聊天模型常驻：Ollama 约 15.8 GB，或 Strata 约 13.1 GB
+* Qwen-Image-2.1 出图峰值约 14.1 GB
 
-好在 ComfyUI 空闲时会自动把模型换到内存（日志里的 RAM pressure cache），
-实测出完图后显存会自己从 13.7 GB 回落到约 3 GB。所以只需要单向操作：
-**出图前显式叫 Ollama 卸载模型**，出图结束后下次聊天请求会让 Ollama
-按需重新加载（冷启动约 28~38 秒）。
+两条后端路径不同，都封装在这里：
+
+* **Ollama（旧后端）**：出图前调 ``/api/generate``（keep_alive=0）把模型卸下，
+  下次聊天请求它自己按需加载（冷启动 28~38 秒），所以不需要"恢复"动作。
+* **Strata（当前后端）**：没有卸载 API，只能停掉整个服务
+  （``switch.sh image``，顺带释放约 33 GB 内存）；它不会自己回来，
+  因此停掉时留一个标记文件，由 ``release_image_model()`` 在下一次聊天请求时
+  从后台重新拉起（加载约 39 GB，首次回复会明显变慢）。
 
 配置项见 config.example.json 里的 ``comfy_*`` / ``image_*`` / ``ollama_root``。
 """
@@ -25,11 +29,19 @@ import time
 import urllib.parse
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 LOG = logging.getLogger("qqbot.image")
+
+# 聊天模型（Strata）与生图模型（ComfyUI）的显存互斥切换脚本
+SWITCH_SH = Path.home() / "qwen-image" / "bin" / "switch.sh"
+STRATA_URL = "http://127.0.0.1:8080"
+# 只有"因出图而停掉 Strata"才留这个标记；主人主动停用聊天模型（没有标记）时，
+# 机器人绝不擅自把它拉起来。
+STRATA_STOPPED_FLAG = Path(__file__).resolve().parent / ".strata-stopped"
 
 
 class ImageGenError(RuntimeError):
@@ -41,15 +53,54 @@ class ImageGen:
 
     def __init__(self, cfg: Any) -> None:
         self.cfg = cfg
+        # 出图后后台恢复聊天模型的任务句柄（持有引用，避免被 GC 掉）
+        self._restore_task: asyncio.Task[bool] | None = None
 
     # ---------- 显存互斥 ----------
 
-    async def release_chat_model(self, client: httpx.AsyncClient) -> bool:
-        """叫 Ollama 卸载聊天模型腾显存。
+    async def _strata_alive(self, client: httpx.AsyncClient) -> bool:
+        """Strata 服务是否在应答——在跑就说明显存被它占着。"""
+        try:
+            resp = await client.get(f"{STRATA_URL}/v1/status", timeout=3.0)
+            return resp.status_code == 200
+        except Exception:  # 没启动、连接被拒都算"不在"
+            return False
 
-        Ollama 没在跑、或模型本来就没加载，都不算错误——
-        这只是个优化动作，失败了照样尝试出图（ComfyUI 会自己决定能不能跑）。
+    async def _run_switch(self, mode: str) -> bool:
+        """调用 switch.sh 切换聊天/生图后端（阻塞到脚本返回）。"""
+        if not SWITCH_SH.exists():
+            LOG.warning("[image] 缺少切换脚本: %s", SWITCH_SH)
+            return False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bash", str(SWITCH_SH), mode,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+            text = (out or b"").decode("utf-8", "replace").strip()
+            LOG.info("[image] switch.sh %s -> rc=%s | %s", mode, proc.returncode, text[-300:])
+            return proc.returncode == 0
+        except Exception as error:
+            LOG.warning("[image] switch.sh %s 调用失败: %s", mode, error)
+            return False
+
+    async def release_chat_model(self, client: httpx.AsyncClient) -> bool:
+        """出图前腾显存（与聊天模型互斥）。
+
+        先看 Strata 是否在跑（当前后端）：在跑就停掉整个服务并留下标记，
+        好让下一次聊天请求把它拉回来。否则回退到 Ollama 的卸载调用。
+
+        两种情况下"没在跑/卸载失败"都不算错误——这只是优化动作，
+        失败了照样尝试出图（ComfyUI 会自己决定能不能跑）。
         """
+        if await self._strata_alive(client):
+            ok = await self._run_switch("image")
+            if ok:
+                STRATA_STOPPED_FLAG.touch()
+                LOG.info("[image] 已停掉 Strata 腾显存（下次聊天时自动恢复）")
+            return ok
+
         root = str(self.cfg.ollama_root).rstrip("/")
         try:
             resp = await client.post(
@@ -64,13 +115,21 @@ class ImageGen:
             return False
 
     async def release_image_model(self, client: httpx.AsyncClient) -> bool:
-        """叫 ComfyUI 把模型换出显存，好让聊天模型能整块上卡。
+        """聊天前把生图模型让开，必要时把聊天模型放回来。
 
-        为什么需要这一步：ComfyUI 出完图**不会立刻**释放显存——
+        为什么需要让开：ComfyUI 出完图**不会立刻**释放显存——
         实测出图后它仍占着约 14 GB（日志里的 RAM pressure cache 要闲置很久才回收）。
-        如果这时让 Ollama 加载，它只能拿到 62% 上卡、38% 跑 CPU（实测），
+        如果这时让聊天模型加载，它只能拿到 62% 上卡、38% 跑 CPU（实测），
         聊天会明显变慢。所以聊天前必须显式放开。
+
+        另外：若上一轮出图把 Strata 停掉了（标记文件在），这里在后台重新拉起它，
+        不阻塞这条聊天消息——代价是第一次回复可能赶上它还在加载（约 1 分钟）。
         """
+        if STRATA_STOPPED_FLAG.exists():
+            STRATA_STOPPED_FLAG.unlink(missing_ok=True)
+            self._restore_task = asyncio.create_task(self._run_switch("chat"))
+            LOG.info("[image] 已发起 Strata 恢复（后台加载，首次回复可能稍慢）")
+
         base = str(self.cfg.comfy_base).rstrip("/")
         try:
             resp = await client.post(

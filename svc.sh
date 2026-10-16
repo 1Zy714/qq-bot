@@ -23,6 +23,7 @@ PY="$VENV/bin/python"
 OLLAMA_BIN="$HOME/qwen/runtime/ollama/bin/ollama"
 OLLAMA_LIB="$HOME/qwen/runtime/ollama/lib/ollama/llama-server"
 OLLAMA_URL="http://127.0.0.1:11434"
+STRATA_URL="${STRATA_URL:-http://127.0.0.1:8080}"
 
 script_of() { case "$1" in napcat) echo "$HERE/bot.py" ;; official) echo "$HERE/official_bot.py" ;; *) return 1 ;; esac; }
 log_of() { case "$1" in napcat) echo "$HERE/logs/bot.log" ;; official) echo "$HERE/logs/official.log" ;; *) return 1 ;; esac; }
@@ -76,7 +77,15 @@ ollama_pids() {
   done
 }
 
+# 已用显存（GiB）：优先问 Strata（当前推理后端 8080），回退 Ollama 的 /api/ps
 vram_gib() {
+  local used_mib
+  used_mib="$(curl -s --max-time 4 "$STRATA_URL/v1/status" 2>/dev/null \
+    | grep -o '"used_mib":[0-9.]*' | head -1 | cut -d: -f2)"
+  if [ -n "$used_mib" ]; then
+    awk -v m="$used_mib" 'BEGIN{printf "%.1f", m/1024}'
+    return
+  fi
   curl -s --max-time 4 "$OLLAMA_URL/api/ps" 2>/dev/null \
     | grep -o '"size_vram":[0-9]*' | head -1 | cut -d: -f2 \
     | awk '{printf "%.1f", $1/1073741824}'
@@ -86,6 +95,7 @@ valid() { case "$1" in napcat|official) return 0 ;; *) echo "未知服务: '$1'�
 
 start_one() {
   local name="$1" script log envf existing
+  if [ "$name" = official ]; then rm -f "$HERE/.watchdog-paused"; fi
   script="$(script_of "$name")"; log="$(log_of "$name")"; envf="$(env_of "$name")"
   existing="$(pids_of "$script" | tr '\n' ' ')"
   if [ -n "${existing// /}" ]; then echo "[$name] 已在运行: $existing"; return 0; fi
@@ -106,12 +116,13 @@ start_one() {
 stop_one() {
   local name="$1" script pids
   script="$(script_of "$name")"
+  if [ "$name" = official ]; then touch "$HERE/.watchdog-paused"; fi
   pids="$(pids_of "$script" | tr '\n' ' ')"
-  if [ -z "${pids// /}" ]; then echo "[$name] 未在运行"; return 0; fi
+  if [ -z "${pids// /}" ]; then echo "[$name] 未在运行（守护已暂停）"; return 0; fi
   kill $pids 2>/dev/null || true
   sleep 2
   pids="$(pids_of "$script" | tr '\n' ' ')"
-  if [ -z "${pids// /}" ]; then echo "[$name] 已停止"; else kill -9 $pids 2>/dev/null; echo "[$name] 已强制结束"; fi
+  if [ -z "${pids// /}" ]; then echo "[$name] 已停止（守护已暂停）"; else kill -9 $pids 2>/dev/null; echo "[$name] 已强制结束（守护已暂停）"; fi
 }
 
 start_ollama() {
@@ -136,14 +147,23 @@ stop_ollama() {
 }
 
 status() {
-  local name script pids ps vram
+  local name script pids ps vram sstatus smodel
   for name in napcat official; do
     script="$(script_of "$name")"
     pids="$(pids_of "$script" | tr '\n' ' ')"
     if [ -n "${pids// /}" ]; then echo "[$name] 运行中 PID $pids"; else echo "[$name] 未运行"; fi
   done
+  # 推理后端：优先 Strata（8080），回退 Ollama（11434）
+  sstatus="$(curl -s --max-time 4 "$STRATA_URL/v1/status" 2>/dev/null)"
+  if [ -n "$sstatus" ]; then
+    smodel="$(printf '%s' "$sstatus" | grep -o '"model": *"[^"]*"' | head -1 | cut -d'"' -f4)"
+    vram="$(vram_gib)"
+    echo "[strata] 运行中，模型 ${smodel}（显存 ${vram} GiB，API ${STRATA_URL}/v1）"
+    return
+  fi
   ps="$(curl -s --max-time 4 "$OLLAMA_URL/api/ps" 2>/dev/null)"
   if [ -z "$ps" ]; then
+    echo "[strata] 未运行"
     echo "[ollama] 未运行"
     return
   fi

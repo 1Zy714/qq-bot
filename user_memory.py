@@ -92,6 +92,34 @@ def short_uid(uid: str) -> str:
     return f"群友{tail}" if tail else "群友"
 
 
+def strip_self_reference(note: str, profile: "Profile") -> str:
+    """剥掉印象开头重复的发言人名字。
+
+    实测模型很爱把名字一并写进标记（``[记住:e 事情做不完爱拖到下次]``），
+    而印象本来就挂在这个人名下，注入时会变成
+    ``- e：e 事情做不完爱拖到下次``——读起来像结巴。
+
+    只剥**开头**、且只剥这个人自己的称呼；剥完为空就原样返回，
+    宁可啰嗦也别把一条印象清成空串。
+    """
+    text = (note or "").strip()
+    if not text:
+        return text
+    labels: list[str] = []
+    for label in (profile.name, profile.display, short_uid(profile.uid)):
+        label = (label or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+    # 长的先试：昵称可能把兜底称呼包含在内
+    for label in sorted(labels, key=len, reverse=True):
+        if not text.startswith(label):
+            continue
+        rest = text[len(label):].lstrip(" 　:：,，、。.·-—的")
+        if rest:
+            return rest
+    return text
+
+
 @dataclass(frozen=True)
 class Speaker:
     """一个发言人。
@@ -228,6 +256,7 @@ class UserMemory:
         added = 0
         for note in notes:
             clean = clean_text(note, MAX_NOTE_CHARS)
+            clean = strip_self_reference(clean, profile)
             if not clean or clean in profile.notes:
                 continue
             profile.notes.append(clean)
@@ -239,6 +268,24 @@ class UserMemory:
             self._dirty = True
             self._version += 1
         return added
+
+    def normalize_notes(self) -> int:
+        """把历史印象里重复的自称剥掉，返回被改动的档案数。
+
+        给已经跑过的档案做数据迁移用：早期版本的模型会把发言人名字写进
+        标记（``[记住:e 事情做不完]``），落库后才被发现。新数据在
+        ``add_notes`` 里就拦住了，老数据靠这个方法修一次。
+        """
+        changed = 0
+        for profile in self.users.values():
+            fixed = [strip_self_reference(note, profile) for note in profile.notes]
+            if fixed != profile.notes:
+                profile.notes = fixed
+                changed += 1
+        if changed:
+            self._dirty = True
+            self._version += 1
+        return changed
 
     def _trim(self) -> None:
         """超过上限时淘汰：先扔"一句话都没记住"的纯路人，再扔最久没说话的。"""

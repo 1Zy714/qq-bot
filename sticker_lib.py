@@ -34,17 +34,20 @@ from pathlib import Path
 from typing import Any, Iterable
 
 # 收集过滤阈值：宁可少收，也不要把照片塞进表情库
-MAX_STICKER_BYTES = 2 * 1024 * 1024      # 单张最大 2 MiB
+# 2026-10-17 放宽：原来 2 MiB / 800px 太紧，很多正常静态表情包（尤其 1000px 上下的
+# 梗图）都被当成"照片"拒收了，库一直长不大。gif 仍然无条件收。
+MAX_STICKER_BYTES = 4 * 1024 * 1024      # 单张最大 4 MiB
 MIN_STICKER_BYTES = 1024                 # 小于 1 KiB 的多半是缩略图或空白图
-MAX_PIXELS_SIDE = 800                    # png/jpg 任一边超过 800px 视为照片/截图，不收
-ALWAYS_ACCEPT_TYPES = {"image/gif"}      # gif 基本可以确定是表情包
+MAX_PIXELS_SIDE = 1280                   # png/jpg 任一边超过 1280px 才视为照片/截图，不收
+# gif 与 webp 基本都是表情包（QQ/微信常见的动图格式），无条件收
+ALWAYS_ACCEPT_TYPES = {"image/gif", "image/webp"}
 PHOTO_TYPES = {"image/jpeg", "image/jpg", "image/png"}
-DEFAULT_QUOTA_BYTES = 512 * 1024 * 1024  # 库容量上限 512 MiB
+DEFAULT_QUOTA_BYTES = 1024 * 1024 * 1024  # 库容量上限 1 GiB（放宽阈值后收得更多）
 
-# 模型在回复里写的标记： [表情:开心] / ［表情：无语］（兼容全角）
-TAG_MARKER_RE = re.compile(r"[\[［]\s*表情\s*[:：]\s*([^\]］\n]{1,24}?)\s*[\]］]")
+# 模型在回复里写的标记： [表情:开心] / ［表情：无语］ / [表情包:笑]（兼容全角与「表情包」写法）
+TAG_MARKER_RE = re.compile(r"[\[［]\s*表情(?:包)?\s*[:：]\s*([^\]］\n]{1,24}?)\s*[\]］]")
 # 兜底：模型可能只写 [表情] 不带标签，这时随机挑一张
-BARE_MARKER_RE = re.compile(r"[\[［]\s*表情\s*[\]］]")
+BARE_MARKER_RE = re.compile(r"[\[［]\s*表情(?:包)?\s*[\]］]")
 
 
 @dataclass
@@ -253,10 +256,15 @@ class StickerLibrary:
         return rng.choice(list(self._items.values()))
 
     def pick_by_tag(self, tag: str) -> Sticker | None:
-        """按标签挑一张；标签为空时退回随机。"""
+        """按标签挑一张；标签为空时退回随机。
+
+        模型不一定会写库里的标准标签（爱写「开心」而不是「笑」），所以先过一层
+        同义词归一，再做精确/子串匹配；都不中才返回 None（调用方会跳过发图）。
+        """
         want = (tag or "").strip().lower()
         if not want:
             return self.pick_random()
+        want = TAG_SYNONYMS.get(want, want)
         matched = [
             s for s in self._items.values()
             if want in {t.lower() for t in s.tags}
@@ -348,6 +356,24 @@ TAG_MEANINGS: dict[str, str] = {
     "再见": "告别",
 }
 
+# 模型不一定写标准标签（爱写「开心」「高兴」「抱抱」），这里归一化到上面的标准词，
+# 免得挑不到图就干脆不发了。键一律小写。
+TAG_SYNONYMS: dict[str, str] = {
+    "开心": "笑", "高兴": "笑", "好笑": "笑", "搞笑": "笑", "哈哈": "笑",
+    "大笑": "笑", "乐": "笑", "笑死": "笑", "憨笑": "笑",
+    "称赞": "夸赞", "表扬": "夸赞", "夸奖": "夸赞", "赞美": "夸赞",
+    "骄傲": "得意", "自豪": "得意", "得瑟": "得意", "嘚瑟": "得意", "炫耀": "得意",
+    "抱抱": "亲昵", "亲亲": "亲昵", "贴贴": "亲昵", "撒娇": "亲昵", "喜欢": "亲昵", "示好": "亲昵",
+    "嫌弃": "无语", "吐槽": "无语", "翻白眼": "无语", "无奈": "无语", "服了": "无语", "汗": "无语",
+    "愤怒": "生气", "火大": "生气", "气鼓鼓": "生气", "不爽": "生气", "怒": "生气", "恼火": "生气",
+    "疑惑": "疑问", "困惑": "疑问", "不解": "疑问", "懵": "疑问", "问号": "疑问",
+    "震惊": "吃惊", "惊讶": "吃惊", "惊呆": "吃惊", "吓到": "吃惊", "意外": "吃惊",
+    "委屈": "哭", "难过": "哭", "伤心": "哭", "流泪": "哭", "呜呜": "哭",
+    "疲惫": "困", "好累": "困", "累了": "困", "睡觉": "困", "打哈欠": "困", "困了": "困",
+    "躺平": "摆烂", "放弃": "摆烂", "摸鱼": "摆烂", "开摆": "摆烂",
+    "拜拜": "再见", "告别": "再见", "走了": "再见", "溜了": "再见", "告辞": "再见",
+}
+
 
 def build_sticker_hint(summary: str, enabled: bool = True, count: int = 0,
                        web_enabled: bool = False, tags: list[str] | None = None) -> str:
@@ -371,7 +397,7 @@ def build_sticker_hint(summary: str, enabled: bool = True, count: int = 0,
                 "\n\n【表情包】本地表情包库还是空的。想配图时先调用 search_sticker "
                 "工具（关键词 2~6 字，如「猫猫开心」），它会下载并收藏，"
                 "然后你用 [表情:关键词] 把图发出去。"
-                "合适才用，不要每条回复都配图。"
+                "大部分回复都可以配一张，只要情绪对得上。"
             )
         return (
             "\n\n【表情包】目前表情包库还是空的（会自动从群聊里收集），"
@@ -399,12 +425,13 @@ def build_sticker_hint(summary: str, enabled: bool = True, count: int = 0,
         "烦躁->无语/摆烂；撒娇求安慰->亲昵；你说不准->疑问；被吓到->吃惊；\n"
         "难过->哭；累了->困；道别->再见。\n"
         "别为了哄人就挑无关标签（被骂要用「生气」而不是「亲昵」）。\n"
-        "对不上就不加；别每条都加；别连用同一张；别自编标签（自编的图不存在）。"
+        "**默认每条回复都配一张**（它只多占一条，不影响正文）；\n"
+        "只有这句话确实没有情绪时才不加；标签必须用上面列的，别自编；别连用同一张。"
     )
 
     if web_enabled:
         base += (
-            " 只有当上面这些标签都不贴合时才调用 search_sticker 现找一张"
-            "（关键词 2~6 字），再用 [表情:关键词] 发出去。"
+            " 想更贴切、更新鲜，或上面标签都不合适时，可以调用 search_sticker "
+            "现找一张（关键词 2~6 字），再用 [表情:关键词] 发出去。"
         )
     return base

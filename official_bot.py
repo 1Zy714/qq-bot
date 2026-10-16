@@ -62,6 +62,7 @@ from user_memory import (  # noqa: E402  按 openid 记住每个人（与协议�
     UserMemory,
     parse_memory_marker,
 )
+from msg_guard import MessageDedup, SendGuard  # noqa: E402  消息去重 + 发送熔断
 
 import botpy  # noqa: E402
 from botpy import logging as botpy_logging  # noqa: E402
@@ -143,7 +144,7 @@ class LocalModel:
         """打一次本地模型的 OpenAI 兼容端点，需要时会走联网工具。"""
         content = await chat_with_tools(
             self.client, self.cfg, messages,
-            max_rounds=2 if self.cfg.tools_enabled else 0,
+            max_rounds=3 if self.cfg.tools_enabled else 0,
             sticker=self.sticker_lib,
         )
         content = clean_reply(content)
@@ -449,7 +450,8 @@ class AutoChatPolicy:
         if not allowed:
             # 空白名单 = 一个群都不接。这是故意的安全默认：被拉进新群不会立刻开麦。
             return deny("no_group_whitelisted")
-        if group not in allowed:
+        # "*" = 不限制，任何群都接（2026-10-17 主人指定；注意被人拉进陌生群也会开口）
+        if "*" not in allowed and group not in allowed:
             return deny("group_not_allowed")
         if self.in_quiet_hours(now):
             return deny("quiet_hours")
@@ -964,24 +966,54 @@ class QQBotClient(botpy.Client):
         self._last_reply_at: dict[str, float] = {}
         self._reaper_task: asyncio.Task[None] | None = None
 
+    def _send_guard(self) -> SendGuard:
+        """发送熔断器（惰性创建）。连续失败到阈值就先停一会儿，别一直撞墙。"""
+        guard = getattr(self, "_send_guard_obj", None)
+        if guard is None:
+            guard = SendGuard()
+            self._send_guard_obj = guard
+        return guard
+
     def _senders(self, message: Any) -> tuple[Sender, ImageSender]:
-        """构造文本/图片两个发送回调；群与单聊的上传路由不同。"""
+        """构造文本/图片两个发送回调；群与单聊的上传路由不同。
+
+        两个回调都过一道发送熔断：连续发不出去时先停一会，
+        避免对着已经失败的接口猛刷（参考项目的做法，按本项目需要简化）。
+        """
         group_openid = getattr(message, "group_openid", None)
 
         async def sender(content: str, seq: int) -> None:
+            guard = self._send_guard()
+            if not guard.allow():
+                LOG.warning("[qq] 发送熔断中，跳过本条文本（连续失败 %d 次）", guard.failures)
+                return
             # 被动回复：msg_id 5 分钟内有效，同一 msg_id 最多 5 条，msg_seq 必须不同。
-            await message.reply(msg_type=0, content=content, msg_seq=seq)
+            try:
+                await message.reply(msg_type=0, content=content, msg_seq=seq)
+            except Exception:
+                guard.fail()
+                raise
+            guard.ok()
 
         async def image_sender(data: bytes, seq: int) -> None:
-            if group_openid:
-                info = await self._upload_image(
-                    {"group_openid": group_openid}, "/v2/groups/{group_openid}/files", data
-                )
-            else:
-                info = await self._upload_image(
-                    {"openid": message.author.user_openid}, "/v2/users/{openid}/files", data
-                )
-            await message.reply(msg_type=7, media={"file_info": info}, msg_seq=seq)
+            guard = self._send_guard()
+            if not guard.allow():
+                LOG.warning("[qq] 发送熔断中，跳过本条图片（连续失败 %d 次）", guard.failures)
+                return
+            try:
+                if group_openid:
+                    info = await self._upload_image(
+                        {"group_openid": group_openid}, "/v2/groups/{group_openid}/files", data
+                    )
+                else:
+                    info = await self._upload_image(
+                        {"openid": message.author.user_openid}, "/v2/users/{openid}/files", data
+                    )
+                await message.reply(msg_type=7, media={"file_info": info}, msg_seq=seq)
+            except Exception:
+                guard.fail()
+                raise
+            guard.ok()
 
         return sender, image_sender
 
@@ -1092,6 +1124,8 @@ class QQBotClient(botpy.Client):
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
         """群里 @ 机器人（intents: public_messages）。"""
         LOG.info("[qq] 群@消息 group=%s user=%s", message.group_openid, message.author.member_openid)
+        if self._is_duplicate(message, getattr(message, "content", "") or ""):
+            return
         await self._harvest_stickers(message)
         sender, image_sender = self._senders(message)
         await self.responder.answer(
@@ -1104,6 +1138,41 @@ class QQBotClient(botpy.Client):
         # 记账：一是喂给自动接话的冷却，二是防止同一条消息被
         # GROUP_AT_MESSAGE_CREATE 与 GROUP_MESSAGE_CREATE 各回一次（双触发）。
         self.state.note_reply(str(message.group_openid))
+
+    def _is_duplicate(self, message: object, content: str) -> bool:
+        """平台重推的同一条消息只处理一次（去重窗口 5 分钟）。
+
+        QQ 会重推消息：同一张表情会被收两次、同一句话可能被回两遍。
+        键优先用 ``message.id``，拿不到时退回「发送者+内容」指纹。
+        """
+        guard = getattr(self, "_dedup", None)
+        if guard is None:
+            guard = MessageDedup()
+            self._dedup = guard
+        key = MessageDedup.key_of(message, content)
+        if guard.seen(key):
+            LOG.info("[qq] 重复消息已跳过 key=%s", key[:28])
+            return True
+        return False
+
+    def _mentions_bot(self, text: str) -> bool:
+        """全量群消息里判断「是否 @ 了机器人」。
+
+        开了「接收所有消息」后，平台把 @ 消息也推到全量事件，并把 @ 渲染成
+        ``<@openid>`` 留在正文里；机器人自己的 openid 记在 ``auto_chat.bot_openid``。
+
+        没有配置 openid 时一律返回 False —— 退回原来的概率行为，宁可少答，
+        也不要把别人之间的 @ 误判成 @ 机器人。
+        """
+        policy = getattr(self, "policy", None)
+        raw = getattr(policy, "raw", None)
+        ids = (raw or {}).get("bot_openid") or ""
+        if isinstance(ids, str):
+            ids = [p for p in re.split(r"[,\s]+", ids) if p]
+        if not ids:
+            return False
+        body = text or ""
+        return any(f"<@{i}>" in body for i in ids)
 
     async def on_group_message_create(self, message: GroupMessage) -> None:
         """群消息（全量模式）：群里每条消息都推过来，不需要 @。
@@ -1118,6 +1187,9 @@ class QQBotClient(botpy.Client):
 
         ``auto_chat`` 关闭时本函数行为与加这套机制之前**完全一致**。
         """
+        # 去重要放在最前面：平台重推的同一张表情不该被收两次、同一句话也不该被回两遍。
+        if self._is_duplicate(message, getattr(message, "content", "") or ""):
+            return
         # 收藏表情包要放在所有 return **之前**：收图这件事与「要不要回这条消息」
         # 无关，群里别人发的表情包同样值得收进库。
         await self._harvest_stickers(message)
@@ -1135,9 +1207,9 @@ class QQBotClient(botpy.Client):
             decision = policy.decide(
                 group=group,
                 text=text,
-                # @ 由 on_group_at_message_create 单独处理，这里不重复判：
-                # 全量事件里 content 的 @ 前缀已被平台剥掉，拿不到可靠信号。
-                mentioned=False,
+                # 全量事件里 @ 会被渲染成 <@openid>，用它比对机器人自己的 openid。
+                # 旧版这里硬编码 False，导致「@ 机器人」只能靠概率命中（常常不回）。
+                mentioned=self._mentions_bot(text),
                 seconds_since_last=self.state.seconds_since_last(group),
                 today_count=self.state.today_count(group),
             )
@@ -1197,6 +1269,8 @@ class QQBotClient(botpy.Client):
     async def on_c2c_message_create(self, message: C2CMessage) -> None:
         """用户单聊机器人。"""
         LOG.info("[qq] 单聊 user=%s", message.author.user_openid)
+        if self._is_duplicate(message, getattr(message, "content", "") or ""):
+            return
         await self._harvest_stickers(message)
         sender, image_sender = self._senders(message)
         await self.responder.answer(
@@ -1232,7 +1306,7 @@ def build_config(path: Path) -> Config:
 
 async def selftest(cfg: Config) -> int:
     """只验证本地模型那一半，不连腾讯网关。"""
-    personas = PersonaStore(cfg, HERE / "persona.state")
+    personas = PersonaStore(cfg, HERE / "persona.state", HERE / "roles")
     model = LocalModel(cfg, personas)
     try:
         print(f"[selftest] 当前人设：{personas.label()}")
@@ -1264,7 +1338,7 @@ def main() -> int:
         print("缺少凭据：设置 QQ_APPID / QQ_SECRET 环境变量，或写进 config.json。", file=sys.stderr)
         return 2
 
-    personas = PersonaStore(cfg, HERE / "persona.state")
+    personas = PersonaStore(cfg, HERE / "persona.state", HERE / "roles")
     responder = Responder(LocalModel(cfg, personas), cfg, personas)
 
     # 自动聊天：策略与账本是纯内存对象，跟 botpy 完全解耦

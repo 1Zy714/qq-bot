@@ -95,6 +95,41 @@ def test_notes(mem: um.UserMemory) -> None:
     check("空列表不记", mem.add_notes("UID_A", []), 0)
 
 
+def test_self_reference() -> None:
+    """实测缺陷（2026-10-16 从真实档案里发现）：模型把发言人名字也写进了印象。
+
+    档案里原本长这样：``e: 'e 事情做不完爱拖到下次'``，注入后成了
+    ``- e：e 事情做不完爱拖到下次``。以下用例都照真实数据写。
+    """
+    print("\n[4b] 印象开头的自称要被剥掉")
+    p = um.Profile(uid="UID_E", name="e")
+    check("真机数据：剥掉名字", um.strip_self_reference("e 事情做不完爱拖到下次", p),
+          "事情做不完爱拖到下次")
+    check("引号里的称呼不动", um.strip_self_reference('e 管大肥鱼叫“小鲸”', p),
+          "管大肥鱼叫“小鲸”")
+    check("带全角冒号的也剥", um.strip_self_reference("e：爱吃辣", p), "爱吃辣")
+    check("剥完为空则原样保留（不丢信息）", um.strip_self_reference("e", p), "e")
+    check("别人的名字不能误剥", um.strip_self_reference("阿花脾气好", p), "阿花脾气好")
+    check("没昵称时剥兜底称呼",
+          um.strip_self_reference("群友abcdef 爱熬夜", um.Profile(uid="XXabcdef")), "爱熬夜")
+
+    # 走一遍完整入库路径，确认真的落到档案里
+    mem = um.UserMemory(Path(tempfile.mkdtemp()) / "u.json")
+    mem.touch("UID_E", "e")
+    mem.add_notes("UID_E", ["e 事情做不完爱拖到下次", 'e 管大肥鱼叫“小鲸”'])
+    check("入库后不再重复名字", mem.get("UID_E").notes,
+          ["事情做不完爱拖到下次", "管大肥鱼叫“小鲸”"])
+    check("摘要里不再出现『e：e』", "e：e" in mem.digest(), False)
+
+    # 历史数据迁移：老档案已经在磁盘上了，得能修一次
+    legacy = um.Profile(uid="UID_E", name="e", notes=["e 事情做不完爱拖到下次"])
+    holder = um.UserMemory(Path(tempfile.mkdtemp()) / "legacy.json")
+    holder.users["UID_E"] = legacy
+    check("迁移修正历史数据", holder.normalize_notes(), 1)
+    check("迁移后内容正确", legacy.notes, ["事情做不完爱拖到下次"])
+    check("再跑一次无改动", holder.normalize_notes(), 0)
+
+
 def test_digest_stability(mem: um.UserMemory) -> None:
     print("\n[5] 摘要稳定性（前缀缓存的关键）")
     first = mem.digest()
@@ -166,6 +201,7 @@ def main() -> int:
         test_sanitize()
         test_bookkeeping(mem)
         test_notes(mem)
+        test_self_reference()
         test_digest_stability(mem)
         test_persistence()
         test_forget(mem)

@@ -209,12 +209,18 @@ class PersonaStore:
     ``personas`` 为空时退回单套 ``system_prompt``，老配置照常可用。
     """
 
-    def __init__(self, cfg: Config, state_path: Path) -> None:
+    def __init__(self, cfg: Config, state_path: Path, roles_dir: Path | None = None) -> None:
         self.cfg = cfg
         self.state_path = state_path
+        # roles/*.md：文件名即角色名。文件优先于 config.personas ——
+        # 这样改人设只要编辑文件，不用碰 config（也便于单独备份 / 分享 / 做版本管理）。
+        self.roles_dir = roles_dir
+        self._file_cache: dict[str, tuple[float, str]] = {}
         self.personas: dict[str, str] = {
             str(k): str(v) for k, v in (cfg.personas or {}).items()
         }
+        for name, text in self._load_files().items():
+            self.personas[name] = text
         self.words: list[str] = [str(w) for w in (cfg.persona_words or [])]
         self.aliases: list[str] = [str(w) for w in (cfg.persona_alias_words or [])]
         # 别称 → 正式键名，例如「雪之下雪乃」→「雪乃」，省得记全名
@@ -241,8 +247,55 @@ class PersonaStore:
             return wanted
         return next(iter(self.personas))
 
+    def _load_files(self) -> dict[str, str]:
+        """读 ``roles/*.md``（文件名即角色名，README 跳过）。没有目录就当没有。"""
+        out: dict[str, str] = {}
+        if self.roles_dir is None or not Path(self.roles_dir).is_dir():
+            return out
+        for path in sorted(Path(self.roles_dir).glob("*.md")):
+            if path.stem.lower() == "readme":
+                continue
+            try:
+                text = path.read_text("utf-8").strip()
+            except OSError:
+                continue
+            if not text:
+                continue
+            out[path.stem] = text
+            try:
+                self._file_cache[path.stem] = (path.stat().st_mtime, text)
+            except OSError:
+                pass
+        return out
+
+    def _refresh_current(self) -> None:
+        """当前人设若来自 roles/ 且文件被改动，就地重载 —— 改完下一条消息即生效。
+
+        只认 mtime：文件没动就不读盘，不给每条消息加 IO 开销。
+        """
+        if self.roles_dir is None or not self.current:
+            return
+        path = Path(self.roles_dir) / f"{self.current}.md"
+        if not path.is_file():
+            return
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return
+        cached = self._file_cache.get(self.current)
+        if cached is not None and cached[0] == mtime:
+            return
+        try:
+            text = path.read_text("utf-8").strip()
+        except OSError:
+            return
+        if text:
+            self.personas[self.current] = text
+            self._file_cache[self.current] = (mtime, text)
+
     def prompt(self) -> str:
-        """当前人设文本。"""
+        """当前人设文本。roles/ 下的文件被编辑后，下一条消息自动用新内容。"""
+        self._refresh_current()
         if self.personas and self.current in self.personas:
             return self.personas[self.current]
         return str(self.cfg.system_prompt)
@@ -305,7 +358,7 @@ class Bot:
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.personas = PersonaStore(cfg, HERE / "persona.state")
+        self.personas = PersonaStore(cfg, HERE / "persona.state", HERE / "roles")
         self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.history: dict[str, deque[dict[str, str]]] = {}
         self.last_reply_at: dict[str, float] = {}
