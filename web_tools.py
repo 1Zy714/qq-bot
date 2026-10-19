@@ -405,6 +405,15 @@ async def run_tool(
     name: str, args: dict[str, Any], client: Any, sticker: Any = None
 ) -> str:
     """按名字执行工具；未知工具或执行失败都返回一句可读文本，不抛异常。"""
+    # MCP 工具（名字形如 mcp__<server>__<tool>）统一转发给桥接层。
+    # 桥接层未连接时 call_tool 会回一句"未连接"，不会抛异常。
+    if name.startswith("mcp__"):
+        try:
+            from mcp_bridge import call_tool as mcp_call
+
+            return await mcp_call(name, args)
+        except Exception as error:  # noqa: BLE001
+            return f"MCP 工具 {name} 调用失败：{type(error).__name__}"
     handlers = {
         "get_daily_news": get_daily_news,
         "get_hot_topics": get_hot_topics,
@@ -454,7 +463,20 @@ async def chat_with_tools(
             "reasoning_effort": "none",
         }
         if round_index < max_rounds:
-            payload["tools"] = TOOL_SCHEMAS
+            # 内置工具 + **按需** MCP 工具：只有游戏真在跑（bridge 文件存在）才注入，
+            # 纯闲聊时只带 6 个内置工具，避免 25 个游戏工具干扰性格表现。
+            all_tools = list(TOOL_SCHEMAS)
+            try:
+                from mcp_bridge import ensure_servers, tool_schemas
+
+                servers = getattr(cfg, "mcp_servers", None)
+                if servers is None:
+                    servers = (getattr(cfg, "values", {}) or {}).get("mcp_servers") or []
+                await ensure_servers(servers)
+                all_tools += tool_schemas()
+            except Exception:  # noqa: BLE001 - MCP 出问题不影响聊天
+                pass
+            payload["tools"] = all_tools
             payload["tool_choice"] = "auto"
         response = await client.post(url, json=payload)
         response.raise_for_status()

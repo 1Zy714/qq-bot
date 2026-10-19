@@ -1032,6 +1032,66 @@ class QQBotClient(botpy.Client):
         # 定时主动发言要等连上网关之后再起（发送依赖已鉴权的 api）
         if self.scheduler is not None:
             self.scheduler.start()
+        # MCP 外部工具（如星露谷桥）：连上后模型就能调用 mcp__* 工具。
+        # 放在后台任务里，失败只记日志，不影响网关和本体。
+        if getattr(self, "_mcp_task", None) is None:
+            self._mcp_task = asyncio.create_task(self._init_mcp())
+        # 星露谷自主循环：她自己看状态、决定做什么、做完来 QQ 汇报
+        if getattr(self, "_game_loop", None) is None:
+            self._game_loop = self._build_game_loop()
+            if self._game_loop is not None:
+                self._game_loop.start()
+
+    def _build_game_loop(self):
+        """按配置构造自主循环；没开或没配汇报目标就返回 None。"""
+        try:
+            from game_loop import GameLoop
+
+            values = self.responder.cfg.values
+            conf = values.get("game_loop") or {}
+            if not conf.get("enabled"):
+                LOG.info("[qq][game] 未启用（config.json 的 game_loop.enabled=false）")
+                return None
+            servers = values.get("mcp_servers") or []
+            if not servers:
+                LOG.info("[qq][game] 没有 MCP server，跳过自主循环")
+                return None
+            target: dict[str, str] = {}
+            if conf.get("report_group"):
+                target["group_openid"] = str(conf["report_group"])
+            elif conf.get("report_user"):
+                target["user_openid"] = str(conf["report_user"])
+            if not target:
+                LOG.warning("[qq][game] 没配 report_group / report_user，只记录不汇报")
+            return GameLoop(
+                client=self,
+                model=self.responder.model,
+                mcp_servers=servers,
+                report_target=target,
+                interval=float(conf.get("interval_seconds") or 300),
+                log=lambda fmt, *a: LOG.info(fmt, *a),
+            )
+        except Exception as error:  # noqa: BLE001
+            LOG.warning("[qq][game] 自主循环构建失败：%s", error)
+            return None
+
+    async def _init_mcp(self) -> None:
+        """后台探测 MCP servers：**只有游戏在跑才连**（按需，避免干扰纯聊天）。"""
+        try:
+            from mcp_bridge import ensure_servers
+
+            configs = self.responder.cfg.values.get("mcp_servers") or []
+            if not configs:
+                LOG.info("[qq][mcp] 未配置 MCP server（config.json 的 mcp_servers 为空）")
+                return
+            result = await ensure_servers(configs)
+            if not result:
+                LOG.info("[qq][mcp] 游戏未运行（bridge 文件不存在），暂不连接 MCP")
+                return
+            for name, status in result.items():
+                LOG.info("[qq][mcp] %s: %s", name, status)
+        except Exception as error:  # noqa: BLE001
+            LOG.warning("[qq][mcp] 初始化失败：%s", error)
 
     async def _upload_image(self, route_kwargs: dict[str, Any], route_path: str, data: bytes) -> str:
         """上传图片到 QQ 富媒体接口，返回 ``file_info``。
