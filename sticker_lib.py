@@ -249,35 +249,51 @@ class StickerLibrary:
         return st
 
     # -------------------------------------------------------------------- 挑选
-    def pick_random(self, rng: random.Random | None = None) -> Sticker | None:
-        if not self._items:
+    def pick_random(self, rng: random.Random | None = None,
+                    exclude: Iterable[str] = ()) -> Sticker | None:
+        pool = [s for s in self._items.values() if s.sha1 not in set(exclude)]
+        if not pool:
             return None
         rng = rng or random
-        return rng.choice(list(self._items.values()))
+        return rng.choice(pool)
 
-    def pick_by_tag(self, tag: str) -> Sticker | None:
+    def pick_by_tag(self, tag: str, *, exclude: Iterable[str] = (),
+                    neighbors: bool = True) -> Sticker | None:
         """按标签挑一张；标签为空时退回随机。
 
         模型不一定会写库里的标准标签（爱写「开心」而不是「笑」），所以先过一层
-        同义词归一，再做精确/子串匹配；都不中才返回 None（调用方会跳过发图）。
+        同义词归一，再做精确/子串匹配；仍不中时按 ``TAG_NEIGHBORS`` 退到相邻情绪。
+        只有近邻也找不到才返回 None（调用方会跳过发图）。
+
+        ``exclude`` 是最近刚发过的 sha1 集合：同图不连发，否则群里看着像复读机。
         """
+        banned = set(exclude)
         want = (tag or "").strip().lower()
         if not want:
-            return self.pick_random()
+            return self.pick_random(exclude=banned)
         want = TAG_SYNONYMS.get(want, want)
-        matched = [
-            s for s in self._items.values()
-            if want in {t.lower() for t in s.tags}
-        ]
-        if not matched:
-            # 退一步：标签做子串匹配，容忍模型写「开心」而库里有「开心_猫」
+        # 先试模型写的标签，再试相邻情绪；每一层都先精确、后子串
+        candidates = [want, *TAG_NEIGHBORS.get(want, ())] if neighbors else [want]
+        for idx, cand in enumerate(candidates):
+            pool = [s for s in self._items.values() if s.sha1 not in banned]
             matched = [
-                s for s in self._items.values()
-                if any(want in t.lower() or t.lower() in want for t in s.tags)
+                s for s in pool
+                if cand in {t.lower() for t in s.tags}
             ]
-        if not matched:
-            return None
-        return random.choice(matched)
+            if not matched:
+                # 退一步：标签做子串匹配，容忍模型写「开心」而库里有「开心_猫」
+                matched = [
+                    s for s in pool
+                    if any(cand in t.lower() or t.lower() in cand for t in s.tags)
+                ]
+            if matched:
+                if idx > 0:
+                    # 近邻命中是降级行为，调用方日志里需要能看出来
+                    setattr(self, "last_pick_neighbor", f"{tag}->{cand}")
+                else:
+                    setattr(self, "last_pick_neighbor", "")
+                return random.choice(matched)
+        return None
 
     def read_bytes(self, st: Sticker) -> bytes | None:
         try:
@@ -299,7 +315,13 @@ class StickerLibrary:
                 targets.append(items[index - 1])
         else:
             targets = list(self._items.values())
-        clean = {t.strip() for t in tags if t and t.strip()}
+        # 统一归一到标准情绪词：否则模型写「开心」被存成标签「开心」，
+        # 而查询时「开心」又被 TAG_SYNONYMS 归一成「笑」，永远匹配不上自己学的标签。
+        clean: set[str] = set()
+        for tag in tags:
+            text = (tag or "").strip().lower()
+            if text:
+                clean.add(TAG_SYNONYMS.get(text, text))
         if not clean:
             return 0
         n = 0
@@ -372,7 +394,61 @@ TAG_SYNONYMS: dict[str, str] = {
     "疲惫": "困", "好累": "困", "累了": "困", "睡觉": "困", "打哈欠": "困", "困了": "困",
     "躺平": "摆烂", "放弃": "摆烂", "摸鱼": "摆烂", "开摆": "摆烂",
     "拜拜": "再见", "告别": "再见", "走了": "再见", "溜了": "再见", "告辞": "再见",
+    # 2026-10-20：模型经常写「吃瓜」「看戏」「绷不住」这类，之前一律挑不到图
+    "吃瓜": "无语", "看戏": "无语", "乐子": "无语", "绷不住": "无语",
+    "破防": "哭", "感动": "哭", "委屈巴巴": "哭",
+    "夸": "夸赞", "赞": "夸赞", "牛": "夸赞",
+    "摸头": "亲昵", "贴": "亲昵", "rua": "亲昵",
+    "屑": "得意", "臭美": "得意",
+    "麻了": "困", "没劲": "摆烂", "无聊": "摆烂",
+    "惊了": "吃惊", "离谱": "吃惊",
 }
+
+# 情绪近邻：库里有标签但不完全等于模型写的词时，允许退到相邻情绪。
+# 目的只有一个——**别让「标签差一个字就整条不发」**，同时也不能退得太远
+# 变成「难过配一张笑图」。所以每个标签只给 2~3 个近邻，且按情绪大类连。
+TAG_NEIGHBORS: dict[str, tuple[str, ...]] = {
+    "笑": ("夸赞", "得意", "亲昵"),
+    "夸赞": ("得意", "笑"),
+    "得意": ("夸赞", "笑"),
+    "亲昵": ("笑", "哭"),
+    "无语": ("生气", "摆烂", "疑问"),
+    "生气": ("无语", "吃惊"),
+    "疑问": ("吃惊", "无语"),
+    "吃惊": ("疑问", "生气"),
+    "哭": ("亲昵", "困"),
+    "困": ("摆烂", "哭"),
+    "摆烂": ("困", "无语"),
+    "再见": ("亲昵", "笑"),
+}
+
+
+# 按长度倒序，保证「绷不住」先于「住」这类短词命中；只用标准标签表里有含义的词。
+_EMOTION_SCAN: tuple[str, ...] = tuple(
+    sorted(set(TAG_SYNONYMS) | set(TAG_MEANINGS), key=len, reverse=True)
+)
+
+
+def infer_tags_from_text(text: str, limit: int = 3) -> list[str]:
+    """从一句话里猜情绪标签（弱标签）。
+
+    用途：群友「一句话 + 一张图」时，文字往往就是这张图的情绪注脚
+    （「笑死」「麻了」「破防」）。本机没有视觉模型，这是**零成本**的近似：
+    猜错也只是多一个标签，不会让图发错场合；猜对则让自动收来的图第一次有了语义。
+    """
+    body = (text or "").lower()
+    if not body:
+        return []
+    found: list[str] = []
+    for word in _EMOTION_SCAN:
+        if word not in body:
+            continue
+        tag = TAG_SYNONYMS.get(word, word)
+        if tag in TAG_MEANINGS and tag not in found:
+            found.append(tag)
+            if len(found) >= limit:
+                break
+    return found
 
 
 def build_sticker_hint(summary: str, enabled: bool = True, count: int = 0,
@@ -425,8 +501,10 @@ def build_sticker_hint(summary: str, enabled: bool = True, count: int = 0,
         "烦躁->无语/摆烂；撒娇求安慰->亲昵；你说不准->疑问；被吓到->吃惊；\n"
         "难过->哭；累了->困；道别->再见。\n"
         "别为了哄人就挑无关标签（被骂要用「生气」而不是「亲昵」）。\n"
-        "**默认每条回复都配一张**（它只多占一条，不影响正文）；\n"
-        "只有这句话确实没有情绪时才不加；标签必须用上面列的，别自编；别连用同一张。"
+        "**先说话，再配图**：正文至少一句短话，标记只能加在句子末尾，"
+        "绝对不许只发标记、不写正文。\n"
+        "配图看情绪：对得上就配一张，对不上就不配；不用每条都配，同一张别连发。\n"
+        "群友发图或斗图时，优先用 [表情:...] 回一张接梗，但别解释「这是表情包」。"
     )
 
     if web_enabled:

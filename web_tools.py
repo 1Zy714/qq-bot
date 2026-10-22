@@ -435,6 +435,32 @@ async def run_tool(
         return f"工具 {name} 调用失败：{type(error).__name__}"
 
 
+# ======================
+# 游戏指令的确定性兜底
+# ======================
+
+# 实测模型对"跟着我"这类指令有时只嘴上回、不调工具。
+# 这里加一条确定性的关键词通道：命中就直接执行工具，再让模型把结果说成人话。
+GAME_COMMANDS: list[tuple[tuple[str, ...], str, dict[str, Any]]] = [
+    (("跟着", "跟紧", "跟上", "过来", "出来", "上来"), "stardew_follow", {}),
+    (("停下", "别动", "待着", "别走", "站住"), "stardew_stay", {}),
+    (("浇水", "浇地", "浇一下", "浇了", "把地浇", "浇下"), "stardew_water_all", {}),
+    (("收菜", "收割", "收一下", "收了", "收吧", "把菜收"), "stardew_harvest_all", {}),
+    (("下矿", "挖矿", "打怪", "去矿洞", "挖点"), "stardew_mine", {}),
+    (("种田", "干活", "去农场", "去种"), "stardew_farm", {}),
+    (("钓鱼", "去钓鱼", "钓点"), "stardew_fish", {}),
+]
+
+
+def detect_game_command(text: str) -> tuple[str, dict[str, Any]] | None:
+    """从用户的话里识别明确的游戏指令，返回 (工具名, 参数)。"""
+    if not text:
+        return None
+    for keys, tool, args in GAME_COMMANDS:
+        if any(k in text for k in keys):
+            return tool, dict(args)
+    return None
+
 async def chat_with_tools(
     client: Any,
     cfg: Any,
@@ -452,6 +478,45 @@ async def chat_with_tools(
     """
     convo: list[dict[str, Any]] = list(messages)
     url = str(cfg.ollama_base).rstrip("/") + "/chat/completions"
+
+    # 确定性兜底：明确的游戏指令直接执行（不赌模型今天愿不愿意调工具），
+    # 执行完把结果作为一条系统提示追加进去，让模型只需把结果说成人话。
+    try:
+        from mcp_bridge import ensure_servers as _ensure
+        from mcp_bridge import tool_schemas as _schemas
+
+        servers = getattr(cfg, "mcp_servers", None)
+        if servers is None:
+            servers = (getattr(cfg, "values", {}) or {}).get("mcp_servers") or []
+        if servers:
+            await _ensure(servers)
+            if _schemas():
+                last_user = next(
+                    (
+                        str(m.get("content") or "")
+                        for m in reversed(convo)
+                        if m.get("role") == "user"
+                    ),
+                    "",
+                )
+                hit = detect_game_command(last_user)
+                if hit:
+                    tool_name, tool_args = hit
+                    result = await run_tool(
+                        f"mcp__stardew__{tool_name}", tool_args, client, sticker
+                    )
+                    convo.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                f"（系统：已经替主人执行了 {tool_name}，结果："
+                                f"{str(result)[:120]}。用一句短话回他，不要再调用工具。）"
+                            ),
+                        }
+                    )
+    except Exception:  # noqa: BLE001 - 兜底失败不影响正常聊天
+        pass
+
     for round_index in range(max_rounds + 1):
         payload: dict[str, Any] = {
             "model": cfg.model,
@@ -484,7 +549,11 @@ async def chat_with_tools(
 
         calls = message.get("tool_calls") or []
         if not calls:
-            return str(message.get("content") or "")
+            text = str(message.get("content") or "")
+            # 模型有时会把工具调用"念"出来，别让这种残渣发到群里
+            if "[工具调用]" in text or text.strip().startswith("<tool"):
+                text = "（甩尾）搞定了"
+            return text
 
         convo.append(
             {

@@ -239,13 +239,27 @@ on_ready ──▶ asyncio.create_task(scheduler)
 ```
 闸门：enabled → reply_mode → 白名单 → 静默时段 → 当日额度 → 冷却 → 文本长度
   ↓ 全过
-必答：@（reply_when_mentioned）→ 关键词 → 问号结尾（默认关）
+必答：@（reply_when_mentioned）→ 关键词
+     → 表情包/纯表情（image_reply_cooldown 内必答一次，不跟文字消息抢 cooldown）
   ↓ 都没中
-概率：rng() < probability
+发言时机闸门（2026-10-20 新增，gate.enabled）：
+    硬冷却 → 每小时额度 → 价值评分（提问/图片/长度 加分；多人互聊/同人连发/上次被无视 扣分）
+  ↓ 评分过线
+概率：rng() < probability（设 1.0 = 完全由评分决定）
 ```
 
 闸门放在最前面：既不浪费随机数，也保证"冷却中的群"不会被必答词击穿。
 命中层记在日志的 `reason` / `layer` 字段里，调参时直接 `grep '\[qq\]\[auto\]'`。
+
+**为什么加这一层**：旧的 `probability=0.8 + cooldown=0` 实测会变成「每条群消息都接」，
+日志里出现大量和上下文无关的自言自语（「廖哥是谁，你认识？」「收我干嘛」）。
+新增的 `SpeechGate` 不额外调模型：只把「像不像在跟机器人说话」「是不是多人正在互聊」
+「是不是同一个人还在连发」「上次开口有没有人接」变成可解释的分数（见
+`official_bot.py` 的 `SpeechGate`，单测在 `test_speech_gate.py`）。
+
+**防抖聚合**：`auto_chat.debounce_seconds > 0` 时，同一个人连发的几条短消息先合并再判定
+（@ 机器人不等待），解决「对着半句话作答」。合并后的文本用 `\n` 连接，回复仍挂在最后一条消息的
+被动窗口上。
 
 ### 9.4 开关位置的更正（重要）
 

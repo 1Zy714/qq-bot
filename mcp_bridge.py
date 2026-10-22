@@ -150,7 +150,10 @@ class McpServer:
             if item.get("type") == "text":
                 parts.append(str(item.get("text") or ""))
         joined = "\n".join(parts).strip()
-        return (joined or "（工具无返回内容）")[:2000]
+        # 截断上限放得比 get_state/get_surroundings 大得多：
+        # 早先按 2000 截断会让带伙伴的 get_state 变成非法 JSON，策略层解析失败。
+        # 真正喂给模型的文本在其它地方会再截。
+        return (joined or "（工具无返回内容）")[:60000]
 
     async def close(self) -> None:
         if not self.proc:
