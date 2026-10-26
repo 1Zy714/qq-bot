@@ -104,6 +104,20 @@
   "image_usage_text": "用法：/画 一只在雨里弹吉他的柯基",
   "image_error_text": "出图失败了，可能是显存不够或者 ComfyUI 没起来。",
 
+  "_comment_summary": "跨会话摘要：把入站消息按会话记进内存（每会话 14 条、保留 30 分钟、不落盘，重启即清空）。问「刚才谁说了什么」时现算注入 user 消息，不影响 system 前缀缓存。隐私规则：群聊只给本群内容；私聊才放开被点名者的近况（按昵称匹配——官方 openid 区分群成员与私聊用户，没有可靠映射，所以必须保守）。cross_session_max_chars 是单次注入字数上限",
+  "cross_session_enabled": true,
+  "cross_session_max_chars": 700,
+
+  "_comment_growth": "成长附录：只追加的 JSONL（默认 memory/growth.jsonl），每行带哈希链，改历史会被检出「链断」并停止注入、拒绝继续写。模型用 [成长:一句话] 记录，标记绝不外发。三重限流：单条字数 / 每天条数 / 最小间隔。谁能写：growth_allow_private 允许私聊触发；growth_allow_groups 是允许的群 openid 列表（空数组=群里谁都不许写，\"*\"=全部群）；growth_owner_openids 非空时只认这些 openid。growth_path 留空用默认路径。群里发「成长记录」可查看",
+  "growth_enabled": true,
+  "growth_path": "",
+  "growth_max_chars": 200,
+  "growth_per_day": 10,
+  "growth_min_interval_seconds": 1800,
+  "growth_allow_private": true,
+  "growth_allow_groups": [],
+  "growth_owner_openids": [],
+
   "_comment_qq": "官方开放平台路线用；也可用环境变量 QQ_APPID / QQ_SECRET 覆盖",
   "qq_appid": "",
   "qq_secret": ""

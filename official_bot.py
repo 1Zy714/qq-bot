@@ -63,6 +63,8 @@ from user_memory import (  # noqa: E402  按 openid 记住每个人（与协议�
     UserMemory,
     parse_memory_marker,
 )
+from cross_session import CrossSessionLog  # noqa: E402  跨会话摘要（读时现算，不落盘）
+from growth_log import GrowthLog, parse_growth_marker  # noqa: E402  只追加的成长附录
 from msg_guard import MessageDedup, SendGuard  # noqa: E402  消息去重 + 发送熔断
 
 import botpy  # noqa: E402
@@ -1050,6 +1052,21 @@ class Responder:
         if bool(cfg.values.get("user_memory_enabled", True)):
             mem_path = cfg.values.get("user_memory_path") or (HERE / "memory" / "users.json")
             self.memory = UserMemory(Path(mem_path))
+        # 跨会话摘要：只记入站消息、只在提问里「像在问别人」时现算，纯内存不落盘
+        self.cross: CrossSessionLog | None = None
+        if bool(cfg.values.get("cross_session_enabled", True)):
+            self.cross = CrossSessionLog()
+        self.cross_max_chars = int(cfg.values.get("cross_session_max_chars", 700))
+        # 成长附录：只追加 + 哈希链；链断时停止注入、也拒绝继续写
+        self.growth: GrowthLog | None = None
+        if bool(cfg.values.get("growth_enabled", True)):
+            growth_path = cfg.values.get("growth_path") or (HERE / "memory" / "growth.jsonl")
+            self.growth = GrowthLog(
+                Path(growth_path),
+                max_chars=int(cfg.values.get("growth_max_chars", 200)),
+                max_per_day=int(cfg.values.get("growth_per_day", 10)),
+                min_interval=float(cfg.values.get("growth_min_interval_seconds", 1800.0)),
+            )
 
     def sticker_hint(self) -> str:
         """本次请求要追加的表情包说明（含当前可用标签）。
@@ -1078,6 +1095,9 @@ class Responder:
         suffix = FACE_HINT + self.sticker_hint()
         if self.memory is not None:
             suffix += self.memory.digest()
+        if self.growth is not None:
+            # 成长附录只在新条目出现时变化，不会每条消息都改写 system 前缀
+            suffix += self.growth.digest()
         return suffix
 
     def memory_command(self, text: str) -> tuple[bool, str]:
@@ -1108,6 +1128,77 @@ class Responder:
             return True, f"我没记住「{target}」，不用删。"
         return False, ""
 
+    def growth_command(self, text: str) -> tuple[bool, str]:
+        """「成长记录」查询指令。和记忆指令一样只认严格相等，不认子串。"""
+        if self.growth is None:
+            return False, ""
+        if text.strip() in ("成长记录", "成长附录", "成长列表"):
+            return True, self.growth.describe()[: int(self.cfg.max_reply_chars)]
+        return False, ""
+
+    def record_incoming(
+        self, session: str, speaker: Speaker | None, text: str, msg_id: str = ""
+    ) -> None:
+        """把一条入站消息记进跨会话索引（在判定「要不要回」**之前**调用）。
+
+        名字优先用档案里的显示名：群成员 openid 与私聊 openid 不是同一个值，
+        官方平台给不了「同一个人」的可靠映射，昵称是唯一可用的弱连接——
+        所以跨会话的隐私规则必须按这个前提设计得保守。
+        """
+        if self.cross is None or speaker is None or not text:
+            return
+        name = speaker.name
+        if self.memory is not None:
+            profile = self.memory.get(speaker.uid)
+            if profile is not None:
+                name = profile.display
+        self.cross.record(session, speaker.uid, name, text, msg_id)
+
+    def _growth_allowed(self, session: str, speaker: Speaker | None) -> bool:
+        """谁能触发成长写入：默认只允许私聊，群聊要显式放行。
+
+        默认不放行群聊是故意的：群里任何人只要能让模型吐一句 [成长:...]，
+        就能往这本「只准往后写」的本子里塞东西。
+        """
+        if speaker is None:
+            return False
+        values = self.cfg.values
+        if speaker.scene == "group":
+            allow = values.get("growth_allow_groups") or []
+            if isinstance(allow, str):
+                allow = [part for part in re.split(r"[,\s]+", allow) if part]
+            group = session.split(":", 1)[1] if ":" in session else ""
+            return bool(allow) and ("*" in allow or group in allow)
+        owners = values.get("growth_owner_openids") or []
+        if isinstance(owners, str):
+            owners = [part for part in re.split(r"[,\s]+", owners) if part]
+        if owners:
+            return speaker.uid in owners
+        return bool(values.get("growth_allow_private", True))
+
+    def _absorb_growth(self, reply: str, session: str, speaker: Speaker | None) -> str:
+        """摘掉 [成长:...] 标记并落进附录；标记不能发给用户。
+
+        必须在 sanitize / 截断**之前**调用：成长标记一般写在末尾，被
+        max_reply_chars 截掉半截就会以 "[成长:xxx" 的字面量发进群里。
+        """
+        text, items = parse_growth_marker(reply)
+        if not items:
+            return text
+        if self.growth is None:
+            LOG.info("[qq][growth] 功能未启用，丢弃 %d 条", len(items))
+            return text
+        if not self._growth_allowed(session, speaker):
+            LOG.info("[qq][growth] 来源不在允许名单，丢弃 %d 条 session=%s", len(items), session)
+            return text
+        for item in items:
+            ok, reason = self.growth.append(item)
+            if ok:
+                LOG.info("[qq][growth] 记下一条：%s", item[:40])
+            else:
+                LOG.info("[qq][growth] 未写入（%s）：%s", reason, item[:40])
+        return text
+
     async def answer(
         self,
         session: str,
@@ -1133,7 +1224,6 @@ class Responder:
         2. **模型忙时完全静默** —— 自动任务优先级必须低于真人，不能回 busy_text 刷屏；
         3. **出错也静默** —— error_text 是给真人看的，不是给群友看的。
         """
-        profile: Any = None
         if not auto:
             # 人格指令优先级最高：模型正忙时也应该能切
             handled, command_reply = self.personas.handle_command(prompt)
@@ -1146,6 +1236,13 @@ class Responder:
             handled, command_reply = self.memory_command(prompt)
             if handled:
                 LOG.info("[qq] 记忆指令 %s -> %s", session, command_reply[:40])
+                await sender(command_reply, 1)
+                return
+
+            # 成长附录查询：同样不经模型
+            handled, command_reply = self.growth_command(prompt)
+            if handled:
+                LOG.info("[qq] 成长指令 %s -> %s", session, command_reply[:40])
                 await sender(command_reply, 1)
                 return
 
@@ -1165,12 +1262,32 @@ class Responder:
         # 记账 + 给提问打上发言人标签。
         # 标签放在 **user 消息**里而不是 system 里：system 要逐字稳定，
         # 前缀缓存才命中；user 消息本来每条都是新的，加多少都不会亏。
+        profile: Any = None
         if self.memory is not None and speaker is not None:
             profile = self.memory.touch(speaker.uid, speaker.name)
             self.memory.save()
+
+        # 跨会话摘要：读时现算，同样拼进 user 消息（system 不能逐条变）。
+        # 预算按剩余空间给，否则它会把主人这句话本身挤到截断之外。
+        cross_block = ""
+        if self.cross is not None and speaker is not None:
+            name = profile.display if profile is not None else speaker.name
+            budget = int(self.cfg.max_prompt_chars) - len(prompt) - 40
+            if budget > 80:
+                cross_block = self.cross.digest(
+                    session,
+                    prompt,
+                    speaker_uid=speaker.uid,
+                    speaker_name=name,
+                    max_chars=min(self.cross_max_chars, budget),
+                )
+
+        if self.memory is not None and speaker is not None:
             # 不分主客：群里一律【群友】，单聊一律【私聊】
             scene = "群友" if speaker.scene == "group" else "私聊"
             prompt = f"[{scene} {profile.display}] {prompt}"
+        if cross_block:
+            prompt = f"{prompt}{cross_block}"
 
         if self.model.overloaded:
             if auto:
@@ -1201,6 +1318,8 @@ class Responder:
         # 记忆标记必须在 sanitize/截断 **之前** 摘掉：标记一般写在末尾，
         # 一旦被 max_reply_chars 截掉半截，就会以 "[记住:xxx" 的字面量发进群里。
         reply, notes = parse_memory_marker(reply)
+        # 成长标记和外发正文互斥：摘掉后落进附录，绝不能发进群里
+        reply = self._absorb_growth(reply, session, speaker)
         if notes and profile is not None and self.memory is not None:
             added = self.memory.add_notes(profile.uid, notes)
             if added:
@@ -1226,6 +1345,7 @@ class Responder:
                     ),
                 )
                 retry, retry_notes = parse_memory_marker(retry)
+                retry = self._absorb_growth(retry, session, speaker)
                 if retry_notes and profile is not None and self.memory is not None:
                     if self.memory.add_notes(profile.uid, retry_notes):
                         self.memory.save()
@@ -1610,6 +1730,14 @@ class QQBotClient(botpy.Client):
         tags = await self._harvest_stickers(message)
         sender, image_sender = self._senders(message)
         text, _ = message_text(message, tags)
+        # 先记进跨会话索引：即使这条不触发回复（模型忙 / 判定不接），
+        # 「谁刚才说了什么」也该记得住——那正是这层存在的意义。
+        self.responder.record_incoming(
+            f"group:{message.group_openid}",
+            speaker_of(message, "group"),
+            text,
+            str(getattr(message, "id", "") or ""),
+        )
         await self.responder.answer(
             f"group:{message.group_openid}",
             text,
@@ -1768,6 +1896,14 @@ class QQBotClient(botpy.Client):
 
         # 记账要放在判定之前：这一条本来就是「最近的群消息」，闸门需要看到它
         self.state.note_message(group, who)
+        # 同样要在判定之前记进跨会话索引：被闸门挡掉的闲聊反而是
+        # 「刚才他们聊了什么」最需要的原料。
+        self.responder.record_incoming(
+            f"group:{group}",
+            speaker_of(message, "group"),
+            text,
+            str(getattr(message, "id", "") or ""),
+        )
 
         policy = self.policy
         if policy is not None and policy.enabled:
@@ -1847,6 +1983,12 @@ class QQBotClient(botpy.Client):
         tags = await self._harvest_stickers(message)
         sender, image_sender = self._senders(message)
         text, _ = message_text(message, tags)
+        self.responder.record_incoming(
+            f"c2c:{message.author.user_openid}",
+            speaker_of(message, "c2c"),
+            text,
+            str(getattr(message, "id", "") or ""),
+        )
         await self.responder.answer(
             f"c2c:{message.author.user_openid}",
             text,
