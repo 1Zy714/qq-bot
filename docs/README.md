@@ -29,7 +29,10 @@
 | [LEARNING.md](LEARNING.md) | 认人记忆与学习机制（1109 行，最详尽的一篇） |
 | [SUMMARY-GROWTH.md](SUMMARY-GROWTH.md) | 跨会话摘要（记得住不越界）+ 成长附录（只准往后写的哈希链本子） |
 | [NAGI-BRIDGE.md](NAGI-BRIDGE.md) | 星露谷第二身体：NagiBridge HTTP → MCP 薄封装（28 个工具） |
-| [MEMORY-SEARCH.md](MEMORY-SEARCH.md) | 记忆按需检索：`[回忆:关键词]` 标记，命中注入 ≤600 字证据 |
+| [MEMORY-SEARCH.md](MEMORY-SEARCH.md) | 记忆：写入合并 / 按需检索（显式+自动）/ 衰减与每日整理 |
+| [CHAT-PERF.md](CHAT-PERF.md) | 聊天提速：裁掉 agent 工具、限 token、游戏工具门控（实测 22.7s→6.6s） |
+| [DSH-BRIDGE.md](DSH-BRIDGE.md) | DSH 桥接：会话映射、工具注入（insert + WSLENV）、空正文兜底 |
+| [GAME-BACKEND.md](GAME-BACKEND.md) | 游戏后端抽象：同伴 NPC / 玩家自动驾驶、动作核验、预算、多击资源 |
 
 ### 图像相关
 
