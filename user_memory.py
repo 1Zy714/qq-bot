@@ -244,8 +244,60 @@ class UserMemory:
         self._version += 1
         return profile
 
+    @staticmethod
+    def _note_key(note: str) -> str:
+        """「键：值」式印象的键（如「住在：杭州」的键是「住在」）。
+
+        没有冒号、或前缀太长（不像键）就返回空串，表示这条是自由描述。
+        """
+        match = re.match(r"^([^：:\s]{1,8})[：:]", note)
+        return match.group(1) if match else ""
+
+    def _merge_note(self, profile: "Profile", note: str) -> str:
+        """把一条印象并进档案：返回 added / replaced / skip。
+
+        三条规则（借鉴 Mem0 的「事实去重」与 fish-memory 的「事实键只留最新」）：
+        1. 完全重复 → skip
+        2. 带事实键且同键已存在 → 用新值替换旧值（「住在：北京」→「住在：杭州」）
+        3. 互为子串 → 保留更具体的那条（长的那条）
+        """
+        notes = profile.notes
+        if note in notes:
+            return "skip"
+        key = self._note_key(note)
+        if key:
+            for index, old in enumerate(notes):
+                if self._note_key(old) == key:
+                    if len(note) >= len(old):
+                        notes[index] = note
+                        return "replaced"
+                    return "skip"
+        for index, old in enumerate(notes):
+            if not old or old == note:
+                continue
+            if note in old:
+                return "skip"          # 新的是旧的一部分，保留旧的
+            if old in note:
+                notes[index] = note    # 新信息更具体，替换旧的
+                return "replaced"
+            # 中文里插一个字就不算子串了（「养了一只猫」→「养了一只橘猫叫咪咪」），
+            # 所以再看共同前缀：前缀够长就当同一件事，保留更具体的那条。
+            prefix = 0
+            for a, b in zip(old, note):
+                if a != b:
+                    break
+                prefix += 1
+            shorter = min(len(old), len(note))
+            if prefix >= 4 and prefix >= shorter * 0.6:
+                if len(note) >= len(old):
+                    notes[index] = note
+                    return "replaced"
+                return "skip"
+        notes.append(note)
+        return "added"
+
     def add_notes(self, uid: str, notes: list[str]) -> int:
-        """给某人补印象，返回真正新增的条数（去重）。"""
+        """给某人补印象，返回真正新增/更新的条数（去重 + 事实键合并）。"""
         key = str(uid or "").strip()
         if not key or not notes:
             return 0
@@ -257,10 +309,10 @@ class UserMemory:
         for note in notes:
             clean = clean_text(note, MAX_NOTE_CHARS)
             clean = strip_self_reference(clean, profile)
-            if not clean or clean in profile.notes:
+            if not clean:
                 continue
-            profile.notes.append(clean)
-            added += 1
+            if self._merge_note(profile, clean) != "skip":
+                added += 1
         if len(profile.notes) > MAX_NOTE_COUNT:
             # 只留最近的几条，否则档案会越滚越大、注入也越来越长
             del profile.notes[:-MAX_NOTE_COUNT]

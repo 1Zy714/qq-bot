@@ -191,6 +191,22 @@ def test_trim() -> None:
     check("有印象的人被保住", m.get("OLD_NOTE") is not None, True)
 
 
+def test_merge_notes(mem: "um.UserMemory") -> None:
+    print("\n[x] 印象合并：事实键 / 子串去重")
+    p = mem.touch("u-merge", "合并测试")
+    check("三条都进", mem.add_notes(p.uid, ["住在：北京", "爱喝茶", "养了一只猫"]), 3)
+    check("同键新值替换旧值", mem.add_notes(p.uid, ["住在：杭州"]), 1)
+    notes = mem.users[p.uid].notes
+    check("旧值没了", "住在：北京" in notes, False)
+    check("新值在", "住在：杭州" in notes, True)
+    check("完全重复不增加", mem.add_notes(p.uid, ["住在：杭州"]), 0)
+    check("更具体的替换笼统的", mem.add_notes(p.uid, ["养了一只橘猫叫咪咪"]), 1)
+    check("笼统的那条被换掉", "养了一只猫" in mem.users[p.uid].notes, False)
+    check("新的具体描述在", "养了一只橘猫叫咪咪" in mem.users[p.uid].notes, True)
+    check("被包含的短句不重复加", mem.add_notes(p.uid, ["爱喝茶"]), 0)
+    check("自由描述继续追加", mem.add_notes(p.uid, ["最近在学做菜"]), 1)
+
+
 def main() -> int:
     print("=" * 62)
     print("用户记忆层单测（纯离线）")
@@ -206,6 +222,7 @@ def main() -> int:
         test_persistence()
         test_forget(mem)
         test_trim()
+        test_merge_notes(mem)
     finally:
         shutil.rmtree(root, ignore_errors=True)
     print("\n" + "=" * 62)
