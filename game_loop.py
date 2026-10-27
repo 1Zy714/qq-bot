@@ -107,7 +107,23 @@ class GameLoop:
         from game_backend import make_backend
         self.backend = make_backend(backend, companion=self.companion, values=values, log=self.log)
         self.done = {"harvest": 0, "water": 0, "clear": 0}
+        # 只有「核验过」的动作才进 done；verified 是其中复核通过的那部分
+        self.verified = {"harvest": 0, "water": 0, "clear": 0}
         self.failures: dict[tuple[str, int, int], int] = {}
+        # 预算（抄 agent-stardew 的思路）：防止一晚上把体力和时间烧光
+        conf = (values or {}).get("game_loop") or {}
+        budget = conf.get("budget") or {}
+        self.max_actions = int(budget.get("max_actions", 80))
+        self.max_model_calls = int(budget.get("max_model_calls", 40))
+        self.max_minutes = float(budget.get("max_minutes", 45))
+        self.actions = 0
+        self.model_calls = 0
+        self._started = time.monotonic()
+        self._stopped = False
+        # 工具动画要几百毫秒才落地；立刻复核会把「还没生效」误判成失败
+        self.verify_delay = float(budget.get("verify_delay_seconds", 0.8))
+        # 大树桩/原木/巨石要挥好几下；每下都算一次动作预算
+        self.max_swings = int(budget.get("max_swings", 6))
         self._player_mode_warned = False
 
     # ---- 生命周期 ----
@@ -130,7 +146,7 @@ class GameLoop:
 
     async def _run(self) -> None:
         await asyncio.sleep(20)
-        while True:
+        while not self._stopped:
             try:
                 await self._tick()
             except asyncio.CancelledError:
@@ -175,6 +191,12 @@ class GameLoop:
     # ---- 一轮 ----
 
     async def _tick(self) -> None:
+        reason = self._budget_reason()
+        if reason:
+            self.log("[game] 预算用尽（%s），停止循环", reason)
+            await self._report(f"今天的农活额度用完了（{reason}），我先收工 (´・ω・)")
+            self._stopped = True
+            return
         if self.backend.kind == "stardew":
             from mcp_bridge import ensure_servers, tool_schemas
             await ensure_servers(self.mcp_servers)
@@ -217,6 +239,17 @@ class GameLoop:
         decision = self._guard(decision, state, comp)
         await self._apply_mode(decision["action"], decision.get("report", ""))
 
+    def _budget_reason(self) -> str:
+        """超预算时返回可读原因，否则空串。"""
+        if self.actions >= self.max_actions:
+            return f"动作 {self.actions}/{self.max_actions}"
+        if self.model_calls >= self.max_model_calls:
+            return f"模型调用 {self.model_calls}/{self.max_model_calls}"
+        minutes = (time.monotonic() - self._started) / 60.0
+        if minutes >= self.max_minutes:
+            return f"时长 {minutes:.0f}/{self.max_minutes:.0f} 分钟"
+        return ""
+
     async def _sync_location(self, state: dict) -> None:
         """把伙伴传送到玩家所在场景（否则她会被冻结在别的场景里）。"""
         loc = str(state.get("location") or "")
@@ -238,21 +271,56 @@ class GameLoop:
 
     async def _do_tile_action(self, comp: dict, cand: dict[str, Any]) -> None:
         kind, x, y, dist = cand["kind"], cand["x"], cand["y"], cand["dist"]
-        if dist > 1:
+        tile = comp.get("tile") or {}
+        dx = int(x) - int(tile.get("x", 0))
+        dy = int(y) - int(tile.get("y", 0))
+        diagonal = bool(dx) and bool(dy)
+        if dist > 1 or (diagonal and kind != "harvest"):
+            # 斜对角不能直接动手（工具只作用于正前方），先走到目标格再打
+            self.actions += 1
             await self.backend.move_to(x, y)
             self.log("[game] 靠近 (%d,%d) 去干 %s", x, y, kind)
             return
-        ok, result = await self.backend.act(kind, x, y)
         bucket = "harvest" if kind == "harvest" else ("water" if kind == "water" else "clear")
+        # 多击资源（树桩/原木/巨石）一次挥不完：连续挥到核验通过或用完挥击次数
+        swings = self.max_swings if kind.startswith("clear_") else 1
+        ok, result = False, "超过挥击次数仍未清掉"
+        for _ in range(max(1, swings)):
+            self.actions += 1
+            ok, result = await self.backend.act(kind, x, y)
+            if not ok:
+                break
+            if await self._verify_tile(kind, x, y):
+                break
+            ok = False  # 这一下没清掉，继续挥
+            result = "上报成功但现场未核验到变化"
         if ok:
             self.done[bucket] += 1
+            self.verified[bucket] += 1
             self.failures.pop((kind, x, y), None)
-            self.log("[game] %s (%d,%d) 成功", kind, x, y)
+            self.log("[game] %s (%d,%d) 成功（已核验）", kind, x, y)
         else:
             self.failures[(kind, x, y)] = self.failures.get((kind, x, y), 0) + 1
             self.log("[game] %s (%d,%d) 失败：%s", kind, x, y, str(result)[:60])
         if self.done[bucket] and self.done[bucket] % 5 == 0:
             await self._report(f"干完 {bucket} 累计 {self.done[bucket]} 次了 (￣▽￣)")
+
+    async def _verify_tile(self, kind: str, x: int, y: int) -> bool:
+        """动作后重新观察，确认那格真的变了。观察失败时不冤枉它（按原结果）。"""
+        if self.verify_delay > 0:
+            # 挥工具是「开始动画」而不是「立刻生效」，不等就会误判
+            await asyncio.sleep(self.verify_delay)
+        observed = await self.backend.observe()
+        if observed is None:
+            return True
+        _, tiles = observed
+        tile = next((t for t in tiles
+                     if int(t.get("x", -1)) == int(x) and int(t.get("y", -1)) == int(y)), None)
+        if kind == "harvest":
+            return tile is None or not tile.get("cropReady")
+        if kind == "water":
+            return tile is not None and int(tile.get("waterState", 0)) == 1
+        return tile is None or not tile.get("breakable")
 
     # ---- 规则 & 战略 ----
 
@@ -301,6 +369,7 @@ class GameLoop:
             "严格只输出两行：\n<action>动作名</action>\n"
             "<report>不超过 25 字、带大肥鱼语气；没事就留空</report>"
         )
+        self.model_calls += 1
         try:
             # 统一走 model.ask：LocalModel 和 DshAgent 都有这个接口。
             # 早先这里直接拼 ollama_base + model.client，换上 DSH 后端就会炸

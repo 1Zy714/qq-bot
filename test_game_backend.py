@@ -191,6 +191,120 @@ def test_strategy_model() -> None:
     check("带标签约束", "只输出" in model.calls[0][1], True)
 
 
+class SeqBackend:
+    """观察返回固定 tiles，动作永远成功——用来测「核验」本身。"""
+
+    kind = "nagi"
+
+    def __init__(self, tiles):
+        self.tiles = tiles
+        self.acted = []
+
+    async def observe(self):
+        return ({"companions": [{"tile": {"x": 0, "y": 0}}], "time": 600,
+                 "location": "Farm"}, self.tiles)
+
+    async def act(self, kind, x, y):
+        self.acted.append((kind, x, y))
+        return True, "reported ok"
+
+    async def move_to(self, x, y):
+        return True
+
+    async def set_mode(self, mode):
+        return True
+
+    async def instant(self, action):
+        return True
+
+    async def warp(self, location, x, y):
+        return True
+
+
+def test_verify_and_budget() -> None:
+    print("\n[6] 核验与预算")
+    import game_loop as gl
+
+    class FakeModel:
+        async def ask(self, *a, **k):
+            return "<action>farm</action>"
+
+    def make_loop(tiles):
+        loop = gl.GameLoop(client=None, model=FakeModel(), mcp_servers=[], backend="nagi")
+        loop.backend = SeqBackend(tiles)
+        loop.verify_delay = 0  # 单测不真等动画
+        return loop
+
+    cand = {"kind": "harvest", "x": 5, "y": 5, "dist": 1}
+
+    comp = {"tile": {"x": 5, "y": 4}}  # 正上方邻格，正交
+    ok_loop = make_loop([{"x": 5, "y": 5, "cropReady": False}])
+    asyncio.run(ok_loop._do_tile_action(comp, cand))
+    check("核验通过才计数", ok_loop.done["harvest"], 1)
+
+    bad_loop = make_loop([{"x": 5, "y": 5, "cropReady": True}])
+    asyncio.run(bad_loop._do_tile_action(comp, cand))
+    check("上报成功但现场没变 → 不计数", bad_loop.done["harvest"], 0)
+    check("失败进黑名单", bad_loop.failures.get(("harvest", 5, 5)), 1)
+
+    water_loop = make_loop([{"x": 5, "y": 5, "crop": True, "waterState": 1}])
+    asyncio.run(water_loop._do_tile_action(comp, {"kind": "water", "x": 5, "y": 5, "dist": 1}))
+    check("浇水的核验看 waterState", water_loop.done["water"], 1)
+
+    clear_loop = make_loop([])
+    asyncio.run(clear_loop._do_tile_action({"tile": {"x": 4, "y": 5}}, {"kind": "clear_weed", "x": 5, "y": 5, "dist": 1}))
+    check("格子消失也算清掉了", clear_loop.done["clear"], 1)
+
+    diag_loop = make_loop([])
+    asyncio.run(diag_loop._do_tile_action({"tile": {"x": 4, "y": 4}}, {"kind": "clear_twig", "x": 5, "y": 5, "dist": 1}))
+    check("斜对角先靠近不动手", diag_loop.done["clear"], 0)
+    check("斜对角不记失败", diag_loop.failures, {})
+
+    # 多击资源：前两次观察仍是可清物，第三次才消失
+    class MultiBackend(SeqBackend):
+        def __init__(self):
+            super().__init__([[{"x": 5, "y": 5, "breakable": True}],
+                              [{"x": 5, "y": 5, "breakable": True}],
+                              []])
+
+        async def observe(self):
+            tiles = self.tiles.pop(0) if self.tiles else []
+            return ({"companions": [{"tile": {"x": 4, "y": 5}}]}, tiles)
+
+    multi = gl.GameLoop(client=None, model=FakeModel(), mcp_servers=[], backend="nagi")
+    multi.backend = MultiBackend()
+    multi.verify_delay = 0
+    asyncio.run(multi._do_tile_action({"tile": {"x": 4, "y": 5}}, {"kind": "clear_twig", "x": 5, "y": 5, "dist": 1}))
+    check("多击资源挥到消失才算成", multi.done["clear"], 1)
+    check("挥了不止一下", len(multi.backend.acted) >= 2, True)
+
+    # 一直打不动：用完挥击次数后记失败
+    class StuckBackend(SeqBackend):
+        async def observe(self):
+            return ({"companions": [{"tile": {"x": 4, "y": 5}}]},
+                    [{"x": 5, "y": 5, "breakable": True}])
+
+    stuck = gl.GameLoop(client=None, model=FakeModel(), mcp_servers=[], backend="nagi")
+    stuck.backend = StuckBackend([])
+    stuck.verify_delay = 0
+    stuck.max_swings = 3
+    asyncio.run(stuck._do_tile_action({"tile": {"x": 4, "y": 5}}, {"kind": "clear_stone", "x": 5, "y": 5, "dist": 1}))
+    check("打不动时记失败", stuck.failures.get(("clear_stone", 5, 5)), 1)
+    check("用完挥击次数就停", len(stuck.backend.acted), 3)
+
+    budget_loop = make_loop([])
+    budget_loop.max_actions = 2
+    budget_loop.actions = 2
+    check("动作超预算", budget_loop._budget_reason().startswith("动作"), True)
+    budget_loop.max_actions = 999
+    budget_loop.max_model_calls = 1
+    budget_loop.model_calls = 1
+    check("模型调用超预算", budget_loop._budget_reason().startswith("模型调用"), True)
+    budget_loop.max_model_calls = 999
+    budget_loop._started -= 4000
+    check("时长超预算", "分钟" in budget_loop._budget_reason(), True)
+
+
 def main() -> int:
     print("=" * 60)
     print("游戏后端抽象 离线单测")
@@ -199,6 +313,7 @@ def main() -> int:
     test_modes()
     test_instant_and_factory()
     test_strategy_model()
+    test_verify_and_budget()
     print("\n" + "=" * 60)
     if FAILURES:
         print(f"✗ {len(FAILURES)} 项失败：")

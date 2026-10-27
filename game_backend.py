@@ -265,6 +265,10 @@ class NagiBackend(BaseBackend):
     async def act(self, kind: str, x: int, y: int) -> tuple[bool, str]:
         px = int(self._player.get("x") or 0)
         py = int(self._player.get("y") or 0)
+        # 工具只作用于「正前方那格」；斜对角硬用会打到旁边的格子，表现为
+        # 「返回 ok 但现场没变化」——交给上层先走一步再打。
+        if kind != "harvest" and abs(x - px) == 1 and abs(y - py) == 1:
+            return False, "斜对角：先站到目标的正邻格再动手"
         direction = self._face_towards(px, py, int(x), int(y))
         await self._call("POST", "/face", {"direction": direction})
         self._facing = direction

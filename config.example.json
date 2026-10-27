@@ -2,10 +2,8 @@
   "host": "127.0.0.1",
   "port": 6199,
   "token": "CHANGE_ME_TO_A_RANDOM_STRING",
-
   "ollama_base": "http://127.0.0.1:11434/v1",
   "model": "qwen3.8-27b-local:latest",
-
   "agent_backend": "local",
   "_comment_agent_backend": "local=直连模型（默认）；dsh=官方 dsh agent（需要 pip install deepseek-harness-sdk，且本地 provider 已配置）",
   "dsh_provider": "local-qwen",
@@ -14,31 +12,33 @@
   "dsh_cwd": "",
   "dsh_patch": "",
   "dsh_timeout": 600,
-
   "system_prompt": "你是 QQ 群里的本地小助手，名字叫小千。用中文口语回答，最多两三句话，不要 Markdown、不要编号列表。不知道就直说不知道，不要编。",
   "max_tokens": 160,
   "temperature": 0.7,
   "request_timeout": 90.0,
-
   "history_turns": 4,
   "queue_limit": 3,
   "max_reply_chars": 400,
   "max_prompt_chars": 500,
-
-  "trigger_prefixes": ["/ai", "#ai"],
+  "trigger_prefixes": [
+    "/ai",
+    "#ai"
+  ],
   "respond_to_private": true,
   "group_cooldown_seconds": 5.0,
   "_comment_reply_all": "群里不 @ 也自动回复。官方路线还必须在**手机 QQ** 里开启「获取群内全部消息」，否则腾讯根本不推该事件（不是开放平台后台的开关）",
   "group_reply_all": false,
   "reply_with_at": true,
-
   "_comment_autochat": "自动聊天（见 docs/AUTOCHAT.md）。enabled=false 时完全走上面的 group_reply_all 旧逻辑。开启后：allowed_groups 白名单（空=一个群都不接）+ 冷却 + 当日额度 + 静默时段共同把关；dry_run=true 只打日志不真发。reply_mode: passive=群内接话（被动回复，不占主动配额）/ proactive=定时主动发言（占 1000 条/天·群配额，群主可随时关）/ both。判定顺序：闸门→必答(关键词/@)→发言时机闸门(gate)→概率，命中层记在日志的 reason/layer 里。debounce_seconds>0 时，同一个人连发的几条消息会先合并再判定（@ 不等待）；gate.enabled=true 时用价值评分代替纯掷骰子，probability 变成放行后的二次门（设 1.0 = 完全由评分决定）",
   "auto_chat": {
     "enabled": false,
     "dry_run": true,
     "reply_mode": "passive",
     "allowed_groups": [],
-    "keywords": ["小助手", "机器人"],
+    "keywords": [
+      "小助手",
+      "机器人"
+    ],
     "reply_when_mentioned": true,
     "reply_when_question": false,
     "probability": 0.1,
@@ -47,7 +47,10 @@
     "cooldown_seconds": 90,
     "image_reply_cooldown": 20,
     "daily_limit_per_group": 30,
-    "quiet_hours": ["23:00", "08:00"],
+    "quiet_hours": [
+      "23:00",
+      "08:00"
+    ],
     "debounce_seconds": 0,
     "gate": {
       "enabled": false,
@@ -69,25 +72,60 @@
     "proactive_max_chars": 80,
     "tick_seconds": 30
   },
-
   "busy_text": "我这边排队有点长，稍等一下再叫我～",
   "error_text": "本地模型好像卡住了，等会儿再试试。",
-  "reset_words": ["重置", "reset", "清空"],
-
+  "reset_words": [
+    "重置",
+    "reset",
+    "清空"
+  ],
   "_comment_memory": "按 openid 记住每个聊过天的人（昵称 / 发言次数 / 模型用 [记住:内容] 标记留下的印象），落盘在 memory/users.json（含真实 openid，已被 .gitignore 挡住）。群里发「记忆」可列出它认识的人，「忘掉 昵称」删单个，「忘掉全部」清空",
   "user_memory_enabled": true,
   "user_memory_path": "",
-
   "_comment_sticker": "表情包：自动收集群聊/单聊里的图片（gif 必收，png/jpg 仅限小尺寸，避免把照片收进来），回复时由模型用 [表情:标签] 标记挑一张发送。sticker_dir 留空用 qq-bot/stickers",
   "sticker_enabled": true,
   "sticker_dir": "",
-
   "_comment_image": "出图（Qwen-Image-2.1 via ComfyUI）。注意 16GB 显存装不下聊天模型+出图模型，默认方案 A：出图前叫 Ollama 卸载模型腾显存，出完图下次聊天冷启动 28~38 秒。权重名须与 ComfyUI/models/ 下完全一致",
   "ollama_root": "http://127.0.0.1:11434",
   "comfy_base": "http://127.0.0.1:8188",
-  "image_prefixes": ["/画", "#画", "/img", "/draw"],
+  "image_prefixes": [
+    "/画",
+    "#画",
+    "/img",
+    "/draw"
+  ],
   "_comment_keywords": "关键词触发：句子中间出现这些词就出图，不需要打命令。故意不放单字「画」——动画/漫画/画质/插画会大量误触发",
-  "image_keywords": ["画一张", "画一幅", "画一个", "画一只", "画个", "画只", "画张", "画一下", "帮我画", "给我画", "帮忙画", "画出来", "画一幅画", "生成图片", "生成一张", "生成一幅", "生成个图", "生成图像", "来张图", "来一张图", "来幅画", "出个图", "画图", "画画", "draw a ", "draw an ", "paint a ", "generate an image", "make an image"],
+  "image_keywords": [
+    "画一张",
+    "画一幅",
+    "画一个",
+    "画一只",
+    "画个",
+    "画只",
+    "画张",
+    "画一下",
+    "帮我画",
+    "给我画",
+    "帮忙画",
+    "画出来",
+    "画一幅画",
+    "生成图片",
+    "生成一张",
+    "生成一幅",
+    "生成个图",
+    "生成图像",
+    "来张图",
+    "来一张图",
+    "来幅画",
+    "出个图",
+    "画图",
+    "画画",
+    "draw a ",
+    "draw an ",
+    "paint a ",
+    "generate an image",
+    "make an image"
+  ],
   "_comment_primary": "主次切换：chat=聊天为主（默认）/ image=生图为主。生图为主时跳过 PE 重写（这就是简化生图逻辑），出图后闲置 image_primary_idle_seconds 秒自动切回聊天为主",
   "primary_model": "chat",
   "image_primary_idle_seconds": 180.0,
@@ -112,11 +150,9 @@
   "image_ack_text": "收到～开始出图，大概 40 秒，画好我直接发出来。",
   "image_usage_text": "用法：/画 一只在雨里弹吉他的柯基",
   "image_error_text": "出图失败了，可能是显存不够或者 ComfyUI 没起来。",
-
   "_comment_summary": "跨会话摘要：把入站消息按会话记进内存（每会话 14 条、保留 30 分钟、不落盘，重启即清空）。问「刚才谁说了什么」时现算注入 user 消息，不影响 system 前缀缓存。隐私规则：群聊只给本群内容；私聊才放开被点名者的近况（按昵称匹配——官方 openid 区分群成员与私聊用户，没有可靠映射，所以必须保守）。cross_session_max_chars 是单次注入字数上限",
   "cross_session_enabled": true,
   "cross_session_max_chars": 700,
-
   "_comment_growth": "成长附录：只追加的 JSONL（默认 memory/growth.jsonl），每行带哈希链，改历史会被检出「链断」并停止注入、拒绝继续写。模型用 [成长:一句话] 记录，标记绝不外发。三重限流：单条字数 / 每天条数 / 最小间隔。谁能写：growth_allow_private 允许私聊触发；growth_allow_groups 是允许的群 openid 列表（空数组=群里谁都不许写，\"*\"=全部群）；growth_owner_openids 非空时只认这些 openid。growth_path 留空用默认路径。群里发「成长记录」可查看",
   "growth_enabled": true,
   "growth_path": "",
@@ -126,8 +162,7 @@
   "growth_allow_private": true,
   "growth_allow_groups": [],
   "growth_owner_openids": [],
-
-  "_comment_game": "自主游戏循环。backend: stardew=操作同伴 NPC（MCP 文件桥，玩家照常玩）/ nagi=NagiBridge HTTP，直接接管玩家本人（会动主人自己的角色！）。nagi 路线只支持 farm / fish(鱼bot) / idle，mine 与 follow 没有对等能力，会自动降级成 idle。companion 只在 stardew 路线用",
+  "_comment_game": "自主游戏循环。backend: stardew=操作同伴 NPC（MCP 文件桥，玩家照常玩）/ nagi=NagiBridge HTTP，直接接管玩家本人（会动主人自己的角色！）。nagi 路线只支持 farm / fish(鱼bot) / idle，mine 与 follow 没有对等能力，会自动降级成 idle。companion 只在 stardew 路线用；budget 是防跑飞的预算：动作次数 / 模型调用次数 / 运行分钟数，任一超限即收工（重启机器人会重置）",
   "game_loop": {
     "enabled": false,
     "backend": "stardew",
@@ -135,9 +170,13 @@
     "companion": "Dafeiyu",
     "nagi_base": "http://localhost:7842",
     "report_user": "",
-    "report_group": ""
+    "report_group": "",
+    "budget": {
+      "max_actions": 80,
+      "max_model_calls": 40,
+      "max_minutes": 45
+    }
   },
-
   "_comment_qq": "官方开放平台路线用；也可用环境变量 QQ_APPID / QQ_SECRET 覆盖",
   "qq_appid": "",
   "qq_secret": ""
