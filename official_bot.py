@@ -1504,6 +1504,7 @@ class QQBotClient(botpy.Client):
     ) -> None:
         super().__init__(**kwargs)
         self.responder = responder
+        self._memory_task: asyncio.Task[None] | None = None
         self.policy = policy
         self.state = state if state is not None else AutoChatState()
         self.scheduler = (
@@ -1568,6 +1569,35 @@ class QQBotClient(botpy.Client):
 
         return sender, image_sender
 
+    async def _memory_maintenance(self) -> None:
+        """后台记忆维护：启动 5 分钟后跑一次，之后每 N 小时一次。
+
+        纯规则整理（合并同义印象 + 淘汰长期不出现的人），不调用模型，
+        所以放在后台跑也不会和聊天抢 GPU / 抢模型队列。
+        """
+        values = self.responder.cfg.values
+        interval = max(1.0, float(values.get("memory_consolidate_interval_hours", 24))) * 3600.0
+        prune_days = float(values.get("memory_prune_days", 180))
+        await asyncio.sleep(300)
+        while True:
+            try:
+                memory = self.responder.memory
+                if memory is not None:
+                    merged = memory.consolidate()
+                    pruned = memory.prune(inactive_days=prune_days)
+                    if merged["merged"] or pruned["users_removed"] or pruned["notes_trimmed"]:
+                        memory.save()
+                    LOG.info(
+                        "[qq][memory] 整理完成：%d 份档案，合并 %d 条印象；淘汰 %d 人、裁剪 %d 条",
+                        merged["profiles"], merged["merged"],
+                        pruned["users_removed"], pruned["notes_trimmed"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - 维护失败不能影响聊天
+                LOG.exception("[qq][memory] 后台整理失败")
+            await asyncio.sleep(interval)
+
     async def on_ready(self) -> None:
         """连接建立后的回调。"""
         # 注意：Client 把 Intents 存成 int，这里没有 .value。
@@ -1582,6 +1612,10 @@ class QQBotClient(botpy.Client):
             self._reaper_task = asyncio.create_task(
                 self.responder.priority.reaper(client)
             )
+        # 记忆整理：每天跑一次「合并重复 + 衰减淘汰」，纯规则不调模型
+        values = self.responder.cfg.values
+        if bool(values.get("memory_consolidate_enabled", True)) and self._memory_task is None:
+            self._memory_task = asyncio.create_task(self._memory_maintenance())
         # 定时主动发言要等连上网关之后再起（发送依赖已鉴权的 api）
         if self.scheduler is not None:
             self.scheduler.start()

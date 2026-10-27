@@ -44,3 +44,27 @@ python3 test_memory_search.py     # 标记解析 / 匹配 / 衰减 / 预算（�
 ```
 
 单测覆盖：多词交集、英文词、时间排序、极小预算截断、无命中返回空。
+
+## 衰减与每日整理（P2）
+
+机器人上线后会在后台**每天整理一次记忆**（纯规则，不调模型、不抢 GPU）：
+
+- **合并**：同一条事实的多个版本（事实键 / 子串 / 共同前缀）合成一条
+- **淘汰**：`memory_prune_days`（默认 180 天）没出现且没印象的人直接移除；
+  有印象但很久没来的，只保留最近 5 条
+- 结果写日志：`[qq][memory] 整理完成：N 份档案，合并 M 条印象；淘汰 X 人`
+
+手动跑：
+
+```bash
+python3 memory_consolidate.py            # 立即整理
+python3 memory_consolidate.py --dry-run  # 只看会改什么
+```
+
+配置：
+
+```json
+"memory_consolidate_enabled": true,
+"memory_consolidate_interval_hours": 24,
+"memory_prune_days": 180
+```

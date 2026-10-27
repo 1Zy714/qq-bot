@@ -339,6 +339,54 @@ class UserMemory:
             self._version += 1
         return changed
 
+    def consolidate(self) -> dict[str, int]:
+        """整理档案：把同一条事实的多个版本合并，返回统计。
+
+        规则和 add_notes 的合并一致（事实键 / 子串 / 共同前缀），只是对**已有**
+        数据跑一遍——旧版本模型写重复的情况不少，跑一次能瘦一圈。
+        """
+        stats = {"profiles": 0, "before": 0, "after": 0, "merged": 0}
+        for profile in self.users.values():
+            if len(profile.notes) < 2:
+                continue
+            stats["profiles"] += 1
+            stats["before"] += len(profile.notes)
+            merged_profile = Profile(uid=profile.uid, name=profile.name)
+            for note in profile.notes:
+                self._merge_note(merged_profile, note)
+            stats["after"] += len(merged_profile.notes)
+            profile.notes = merged_profile.notes
+        stats["merged"] = stats["before"] - stats["after"]
+        if stats["merged"]:
+            self._dirty = True
+            self._version += 1
+        return stats
+
+    def prune(self, inactive_days: float = 180.0, keep_recent_notes: int = 5) -> dict[str, int]:
+        """衰减淘汰：长期不出现的人被遗忘，有印象的只留最近几条。
+
+        借鉴 dsh-fish-memory 的「会淡忘」：不是永久档案，是带半衰期的记忆。
+        """
+        cutoff = time.time() - max(1.0, inactive_days) * 86400.0
+        stats = {"users_removed": 0, "notes_trimmed": 0}
+        for uid, profile in list(self.users.items()):
+            if not profile.last_seen or profile.last_seen >= cutoff:
+                continue
+            if not profile.notes:
+                self.users.pop(uid, None)
+                stats["users_removed"] += 1
+                continue
+            if len(profile.notes) > keep_recent_notes:
+                stats["notes_trimmed"] += len(profile.notes) - keep_recent_notes
+                profile.notes = profile.notes[-keep_recent_notes:]
+            else:
+                self.users.pop(uid, None)
+                stats["users_removed"] += 1
+        if stats["users_removed"] or stats["notes_trimmed"]:
+            self._dirty = True
+            self._version += 1
+        return stats
+
     def _trim(self) -> None:
         """超过上限时淘汰：先扔"一句话都没记住"的纯路人，再扔最久没说话的。"""
         if len(self.users) <= self.max_users:

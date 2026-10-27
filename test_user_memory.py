@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 import tempfile
 from pathlib import Path
 
@@ -207,6 +208,29 @@ def test_merge_notes(mem: "um.UserMemory") -> None:
     check("自由描述继续追加", mem.add_notes(p.uid, ["最近在学做菜"]), 1)
 
 
+def test_consolidate_and_prune(mem: "um.UserMemory") -> None:
+    print("\n[x] 整理（合并）与衰减（淘汰）")
+    p = mem.touch("u-old", "老档案")
+    # 直接塞重复（add_notes 插入时就合并了，模拟历史遗留数据）
+    p.notes = ["喜欢喝咖啡", "喜欢喝咖啡不加糖", "讨厌吵闹"]
+    before = len(mem.users[p.uid].notes)
+    stats = mem.consolidate()
+    check("合并起作用", stats["merged"] >= 1, True)
+    check("档案真的变短", len(mem.users[p.uid].notes) < before, True)
+
+    stale = mem.touch("u-stale", "很久没来")
+    mem.add_notes(stale.uid, ["一条旧印象"])
+    mem.users[stale.uid].last_seen = time.time() - 200 * 86400  # 200 天没出现
+    pruned = mem.prune(inactive_days=180)
+    check("长期不出现被淘汰", pruned["users_removed"] >= 1, True)
+    check("档案已删除", "u-stale" in mem.users, False)
+
+    fresh = mem.touch("u-fresh", "常客")
+    mem.add_notes(fresh.uid, ["还在"])
+    pruned2 = mem.prune(inactive_days=180)
+    check("活跃用户不被淘汰", "u-fresh" in mem.users, True)
+
+
 def main() -> int:
     print("=" * 62)
     print("用户记忆层单测（纯离线）")
@@ -223,6 +247,7 @@ def main() -> int:
         test_forget(mem)
         test_trim()
         test_merge_notes(mem)
+        test_consolidate_and_prune(mem)
     finally:
         shutil.rmtree(root, ignore_errors=True)
     print("\n" + "=" * 62)
