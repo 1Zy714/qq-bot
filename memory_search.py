@@ -29,12 +29,34 @@ HERE = Path(__file__).resolve().parent
 
 RECALL_MARKER_RE = re.compile(r"[\[【]\s*回忆\s*[:：]\s*([^\]】]{1,60})[\]】]")
 
+# 自动触发的线索词：用户在问「过去发生的事」时，不用写标记也该去翻记忆
+RECALL_HINTS = re.compile(r"上次|上回|之前|以前|刚才|那次|还记得|记不记得|说过|聊过|后来")
+# 抽查询时丢掉的虚词（只删单字，不动实词）
+STOP_CHARS = "的了是我你他她它们这那个吗呢吧啊呀嘛么就都也还又很太"
+
 # 半衰期：30 天前的条目权重降到 0.5，90 天前约 0.125
 HALF_LIFE_DAYS = 30.0
 # 单条证据最多展示多少字
 ITEM_CHARS = 120
 DEFAULT_LIMIT = 5
 DEFAULT_CHARS = 600
+
+
+def auto_query(text: str) -> str:
+    """从「上次/之前…」这类问句里抽检索词；不是回忆类问题就返回空串。
+
+    只做保守启发式：命中线索词才触发，抽出来太短就放弃——宁可漏查，
+    也不要在每条普通消息后面硬塞一段无关记忆。
+    """
+    body = (text or "").strip()
+    if len(body) < 6 or not RECALL_HINTS.search(body):
+        return ""
+    sentence = next((part for part in re.split(r"[，。！？；,.!?;\n]", body)
+                     if RECALL_HINTS.search(part)), body)
+    query = RECALL_HINTS.sub(" ", sentence)
+    query = "".join(ch for ch in query if ch not in STOP_CHARS)
+    query = re.sub(r"\s+", " ", query).strip(" ?？!！")
+    return query if len(query) >= 2 else ""
 
 
 def parse_recall(text: str) -> tuple[str, str]:
@@ -198,9 +220,14 @@ class MemorySearch:
         scored.sort(key=lambda e: (e.score, e.ts), reverse=True)
         return scored[: max(1, limit)]
 
-    def digest(self, query: str, limit: int = DEFAULT_LIMIT, max_chars: int = DEFAULT_CHARS) -> str:
-        """检索 + 渲染成给模型看的证据块；没命中返回空串。"""
-        hits = self.search(query, limit)
+    def digest(self, query: str, limit: int = DEFAULT_LIMIT, max_chars: int = DEFAULT_CHARS,
+               min_score: float = 0.0) -> str:
+        """检索 + 渲染成给模型看的证据块；没命中返回空串。
+
+        ``min_score`` 用于自动触发场景：分数太低说明只是弱相关，
+        宁可不注入，也别把无关记忆塞给模型。
+        """
+        hits = [h for h in self.search(query, limit) if h.score >= min_score]
         if not hits:
             return ""
         lines: list[str] = []

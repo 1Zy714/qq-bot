@@ -64,6 +64,25 @@ def test_marker() -> None:
     check("没有标记原样返回", ms.parse_recall("普通消息"), ("普通消息", ""))
 
 
+def test_auto_query() -> None:
+    print("\n[1.5] 自动触发关键词抽取")
+    check("上次类问题会触发", bool(ms.auto_query("上次那个存档崩溃是怎么修的")), True)
+    check("抽到实词", "存档" in ms.auto_query("上次那个存档崩溃是怎么修的"), True)
+    check("记得类问题会触发", bool(ms.auto_query("你还记得我养的是什么猫吗")), True)
+    check("普通闲聊不触发", ms.auto_query("今天天气不错"), "")
+    check("太短的线索不触发", ms.auto_query("之前"), "")
+    check("没有线索词不触发", ms.auto_query("帮我写一段代码"), "")
+
+
+def test_min_score(root: Path) -> None:
+    print("\n[4.5] 自动触发的最低分门槛")
+    engine = ms.MemorySearch(root)
+    # 只命中一个二元组、且内容弱相关：低门槛给，高门槛不给
+    weak = "机器人"
+    check("低门槛会注入", bool(engine.digest(weak, min_score=0.0)), True)
+    check("高门槛会过滤", engine.digest(weak, min_score=5.0), "")
+
+
 def test_search(root: Path) -> None:
     print("\n[2] 检索")
     engine = ms.MemorySearch(root)
@@ -106,12 +125,14 @@ def main() -> int:
     print("=" * 56)
     print("记忆检索 离线单测")
     test_marker()
+    test_auto_query()
     root = Path(tempfile.mkdtemp(prefix="memsearch_"))
     try:
         build(root)
         test_search(root)
         test_decay(root)
         test_digest(root)
+        test_min_score(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
     print("\n" + "=" * 56)

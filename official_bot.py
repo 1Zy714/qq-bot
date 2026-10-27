@@ -67,7 +67,7 @@ from user_memory import (  # noqa: E402  按 openid 记住每个人（与协议�
     parse_memory_marker,
 )
 from cross_session import CrossSessionLog  # noqa: E402  跨会话摘要（读时现算，不落盘）
-from memory_search import MemorySearch, parse_recall  # noqa: E402  按需记忆检索
+from memory_search import MemorySearch, auto_query, parse_recall  # noqa: E402  按需记忆检索
 from growth_log import GrowthLog, parse_growth_marker  # noqa: E402  只追加的成长附录
 from msg_guard import MessageDedup, SendGuard  # noqa: E402  消息去重 + 发送熔断
 
@@ -1066,6 +1066,9 @@ class Responder:
         if bool(cfg.values.get("memory_search_enabled", True)):
             self.recall = MemorySearch(HERE / "memory")
         self.recall_max_chars = int(cfg.values.get("memory_search_max_chars", 600))
+        # 自动触发：问「上次/之前」这类话时自己查，不必写标记
+        self.recall_auto = bool(cfg.values.get("memory_search_auto", True))
+        self.recall_min_score = float(cfg.values.get("memory_search_min_score", 0.45))
         # 成长附录：只追加 + 哈希链；链断时停止注入、也拒绝继续写
         self.growth: GrowthLog | None = None
         if bool(cfg.values.get("growth_enabled", True)):
@@ -1271,14 +1274,21 @@ class Responder:
         # [回忆:关键词] → 现算检索块。标记要从正文里摘掉，不能漏进对话。
         recall_block = ""
         prompt, recall_query = parse_recall(prompt)
+        explicit = bool(recall_query)
+        if not recall_query and self.recall is not None and self.recall_auto:
+            recall_query = auto_query(prompt)
         if recall_query and self.recall is not None:
             recall_block = self.recall.digest(
-                recall_query, max_chars=min(self.recall_max_chars, int(self.cfg.max_prompt_chars) // 2)
+                recall_query,
+                max_chars=min(self.recall_max_chars, int(self.cfg.max_prompt_chars) // 2),
+                # 显式要的照单全给；自动触发的要过分数门槛，别硬塞无关记忆
+                min_score=0.0 if explicit else self.recall_min_score,
             )
+            source = "显式" if explicit else "自动"
             if recall_block:
-                LOG.info("[qq] 记忆检索「%s」命中 %d 条", recall_query, recall_block.count("\n- ["))
+                LOG.info("[qq] 记忆检索(%s)「%s」命中 %d 条", source, recall_query, recall_block.count("\n- ["))
             else:
-                LOG.info("[qq] 记忆检索「%s」没有命中", recall_query)
+                LOG.info("[qq] 记忆检索(%s)「%s」没有命中", source, recall_query)
 
         # 记账 + 给提问打上发言人标签。
         # 标签放在 **user 消息**里而不是 system 里：system 要逐字稳定，
