@@ -243,6 +243,25 @@ QQ 聊天时模型会去翻工作区，回复从秒级拖到 10~20 秒，而且*
 
 > 游戏重新打开后，要让游戏 MCP 生效需要**重启机器人**（MCP 在启动时挂载）。
 
+## 两端门控：游戏没开就不挂工具
+
+游戏 MCP 在**两个地方**挂载，都要有门，否则机器人会带着 28 个死工具聊天：
+
+| 位置 | 怎么判断 | 配置 |
+|---|---|---|
+| 机器人自己（`mcp_bridge`） | `health` 字段里的 URL（`http://localhost:7842/status`）探活，连不上就跳过；失败后 120 秒内不重试 | `config.json` 的 `mcp_servers[].health` |
+| DSH 侧（聊天工具） | `tools/gate-nagi.sh`（curl 探活）/ `tools/gate-stardew.sh`（bridge 文件 2 分钟内更新过） | `dsh-qq.patch.yml` 的 `command` |
+
+实测（游戏关着）：
+
+```
+[qq][mcp] nagi: 跳过挂载：健康检查未通过（游戏没跑？）
+工具清单：working_directory / skill / MCP 资源读取 / exit_plan_mode   ← 没有游戏工具
+```
+
+> **游戏打开后要重启一次机器人**才能挂上（DSH 侧的 MCP 是启动时拉的；
+> 机器人侧虽然 120 秒后会重试，但聊天工具不会自己回来）。
+
 ## 后续
 
 `game_loop.py` 现在还在用 `mcp__stardew__*`。迁移路径：把候选动作生成里的

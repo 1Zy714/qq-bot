@@ -20,9 +20,30 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
+import urllib.request
 from typing import Any
 
 PROTOCOL_VERSION = "2024-11-05"
+
+# 健康检查失败后，多久内不再重试（避免每个 tick 都去敲一次死端口）
+RETRY_AFTER_SECONDS = 120.0
+_LAST_ATTEMPT: dict[str, float] = {}
+
+
+def health_ok(url: str, timeout: float = 3.0) -> bool:
+    """MCP server 对应的外部依赖是否就绪（比如游戏 HTTP 桥）。
+
+    命令是本地进程、游戏却是外部状态：进程能拉起 ≠ 能干活的场景很常见，
+    所以先探一下再决定要不要挂载。
+    """
+    if not url:
+        return True
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return 200 <= resp.status < 400
+    except Exception:  # noqa: BLE001 - 连不上就是没就绪
+        return False
 
 
 class McpServer:
@@ -186,6 +207,11 @@ async def init_servers(configs: list[dict[str, Any]] | None) -> dict[str, str]:
     _INITED = True
     for cfg in configs:
         name = str(cfg.get("name") or "mcp")
+        health = str(cfg.get("health") or "").strip()
+        if health and not await asyncio.to_thread(health_ok, health):
+            _LAST_ATTEMPT[name] = time.monotonic()
+            result[name] = "跳过挂载：健康检查未通过（游戏没跑？）"
+            continue
         server = McpServer(
             name=name,
             command=str(cfg.get("command") or ""),
@@ -229,6 +255,11 @@ async def ensure_servers(configs: list[dict[str, Any]] | None) -> dict[str, str]
     """
     if not configs or SERVERS:
         return {name: "已连接" for name in SERVERS} if SERVERS else {}
+    # 之前健康检查没过：别每个 tick 都重试，隔一段时间再来
+    if _LAST_ATTEMPT:
+        now = time.monotonic()
+        if all(now - stamp < RETRY_AFTER_SECONDS for stamp in _LAST_ATTEMPT.values()):
+            return {}
     first = configs[0] if configs else {}
     bridge = str((first.get("env") or {}).get("STARDEW_BRIDGE_PATH") or "").strip()
     if bridge and not _exists_any(bridge):
