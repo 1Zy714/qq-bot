@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""QQ 开放平台官方机器人 → 本地 Ollama 的桥接（WebSocket 模式）。
+"""QQ 开放平台官方机器人 → 本地模型 / dsh agent 的桥接（WebSocket 模式）。
 
 平台**不会也无法**直接访问你机器上的模型。事件流向是：
 
-    腾讯平台 --(本进程主动连出的 WSS，无需公网 IP)--> 本进程 --(127.0.0.1:11434)--> Ollama
+    腾讯平台 --(本进程主动连出的 WSS，无需公网 IP)--> 本进程 --(127.0.0.1)--> 本地模型
 
 所以"调取本地模型"这件事发生在**本进程内部**：收到群 @ 事件后，用事件里的
-``msg_id`` 在 5 分钟内做被动回复。Ollama 始终只监听回环，不需要任何端口映射。
+``msg_id`` 在 5 分钟内做被动回复。模型服务始终只监听回环，不需要任何端口映射。
+``config.json`` 里 ``agent_backend: "dsh"`` 时，本进程改由官方 Python SDK 驱动
+dsh agent（见 ``dsh_agent.py``），其余触发、清洗、分片逻辑不变。
 
 用法::
 
@@ -42,6 +44,7 @@ sys.path.insert(0, str(HERE))
 
 from bot import Config, PersonaStore, clean_reply  # noqa: E402  复用非官方路线的配置与清洗逻辑
 from web_tools import chat_with_tools  # noqa: E402  联网工具（两条路线共用）
+from dsh_agent import DshAgent  # noqa: E402  dsh agent 后端（agent_backend=dsh）
 from image_gen import (  # noqa: E402  出图（两条路线共用）
     ImageAction,
     ImageCache,
@@ -1028,7 +1031,7 @@ class AutoChatScheduler:
 class Responder:
     """取回复 → 清洗 → 分片 → 回帖。与 botpy 解耦，便于离线测试。"""
 
-    def __init__(self, model: LocalModel, cfg: Config, personas: PersonaStore) -> None:
+    def __init__(self, model: Any, cfg: Config, personas: PersonaStore) -> None:
         self.model = model
         self.cfg = cfg
         self.personas = personas
@@ -1552,10 +1555,12 @@ class QQBotClient(botpy.Client):
             "[qq] 机器人已上线: %s intents=%s 主=%s",
             self.robot.name, self.intents, self.responder.priority.primary,
         )
-        # 生图为主时，闲置够久自动把聊天切回主并释放 ComfyUI
-        if self._reaper_task is None:
+        # 生图为主时，闲置够久自动把聊天切回主并释放 ComfyUI。
+        # dsh 后端没有本地模型的 client（Strata 也不提供卸载 API），跳过即可。
+        client = getattr(self.responder.model, "client", None)
+        if client is not None and self._reaper_task is None:
             self._reaper_task = asyncio.create_task(
-                self.responder.priority.reaper(self.responder.model.client)
+                self.responder.priority.reaper(client)
             )
         # 定时主动发言要等连上网关之后再起（发送依赖已鉴权的 api）
         if self.scheduler is not None:
@@ -1580,8 +1585,10 @@ class QQBotClient(botpy.Client):
             if not conf.get("enabled"):
                 LOG.info("[qq][game] 未启用（config.json 的 game_loop.enabled=false）")
                 return None
+            backend = str(conf.get("backend") or "stardew").strip().lower()
             servers = values.get("mcp_servers") or []
-            if not servers:
+            # nagi 后端走 HTTP，不依赖 MCP；只有 stardew 后端必须有 server
+            if backend != "nagi" and not servers:
                 LOG.info("[qq][game] 没有 MCP server，跳过自主循环")
                 return None
             target: dict[str, str] = {}
@@ -1591,12 +1598,16 @@ class QQBotClient(botpy.Client):
                 target["user_openid"] = str(conf["report_user"])
             if not target:
                 LOG.warning("[qq][game] 没配 report_group / report_user，只记录不汇报")
+            LOG.info("[qq][game] 后端 = %s", backend)
             return GameLoop(
                 client=self,
                 model=self.responder.model,
                 mcp_servers=servers,
                 report_target=target,
                 interval=float(conf.get("interval_seconds") or 300),
+                companion=str(conf.get("companion") or "Dafeiyu"),
+                backend=backend,
+                values=values,
                 log=lambda fmt, *a: LOG.info(fmt, *a),
             )
         except Exception as error:  # noqa: BLE001
@@ -2020,10 +2031,18 @@ def build_config(path: Path) -> Config:
     return cfg
 
 
+def make_model(cfg: Config, personas: PersonaStore) -> Any:
+    """按 config 的 agent_backend 选择模型后端（local / dsh）。"""
+    backend = str(cfg.values.get("agent_backend") or "local").strip().lower()
+    if backend == "dsh":
+        return DshAgent(cfg, personas)
+    return LocalModel(cfg, personas)
+
+
 async def selftest(cfg: Config) -> int:
     """只验证本地模型那一半，不连腾讯网关。"""
     personas = PersonaStore(cfg, HERE / "persona.state", HERE / "roles")
-    model = LocalModel(cfg, personas)
+    model = make_model(cfg, personas)
     try:
         print(f"[selftest] 当前人设：{personas.label()}")
         started = time.monotonic()
@@ -2039,7 +2058,7 @@ async def selftest(cfg: Config) -> int:
 
 def main() -> int:
     """解析参数并启动。"""
-    parser = argparse.ArgumentParser(description="QQ 开放平台机器人 ↔ 本地 Ollama 桥接")
+    parser = argparse.ArgumentParser(description="QQ 开放平台机器人 ↔ 本地模型 / dsh agent 桥接")
     parser.add_argument("--config", default=str(HERE / "config.json"))
     parser.add_argument("--selftest", action="store_true", help="只测本地模型，不连腾讯网关")
     args = parser.parse_args()
@@ -2055,7 +2074,7 @@ def main() -> int:
         return 2
 
     personas = PersonaStore(cfg, HERE / "persona.state", HERE / "roles")
-    responder = Responder(LocalModel(cfg, personas), cfg, personas)
+    responder = Responder(make_model(cfg, personas), cfg, personas)
 
     # 自动聊天：策略与账本是纯内存对象，跟 botpy 完全解耦
     policy = AutoChatPolicy(cfg.values.get("auto_chat"))

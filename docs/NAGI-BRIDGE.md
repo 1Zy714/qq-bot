@@ -106,6 +106,61 @@ PY
 | `move` 总是失败 | 目标不可达；先 `surroundings` 看 `passable` |
 | 商店买不了 | 先 `menu` 看当前菜单和物品 id/价格 |
 
+## 迁移 game_loop 到 Nagi（后端抽象）
+
+`game_backend.py` 把「循环」和「身体」拆开，两条路线同一个循环：
+
+```python
+GameLoop(..., backend="stardew")   # 同伴 NPC（原行为，一字未变）
+GameLoop(..., backend="nagi")      # Nagi HTTP，接管玩家本人
+```
+
+配置在 `config.json`：
+
+```json
+"game_loop": { "enabled": true, "backend": "nagi", "nagi_base": "http://localhost:7842" }
+```
+
+### 字段映射（Nagi → 循环认识的形状）
+
+| 循环需要 | Nagi 提供 |
+|---|---|
+| `companions[0].tile` | `state.player.x/y`（把玩家合成一个 companion） |
+| `companions[0].stamina` | `stamina / maxStamina × 100` |
+| `cropReady` | `harvestable` |
+| `crop` | 有 `crop` 字段 |
+| `waterState` | 没浇水且没熟 → 0；其余 → 1 |
+| `breakable` / `objType` | `object`（Weeds/Stone/Twig）或 `resource`（LargeStump/LargeLog…） |
+
+### 动作映射
+
+| 循环动作 | Nagi |
+|---|---|
+| 移动 | `POST /move`（先 `face` 再动作） |
+| 收割 | `POST /harvest?radius=4`（按半径批量收，不逐格） |
+| 浇水 | `select Watering Can` → `tool` |
+| 清杂草/石/枝 | `select Scythe / Pickaxe / Axe` → `tool` |
+| 批量收 | `POST /harvest?radius=15` |
+| 换模式 | farm=本地循环；fish=`/fishbot on`；idle=`/fishbot off`+`/stop` |
+
+### 能力差异（必须知道）
+
+| 能力 | stardew（同伴） | nagi（玩家） |
+|---|---|---|
+| 主人能否同时玩 | ✅ 是（AI 用二号角色） | ❌ **AI 独占玩家角色** |
+| 天气 | ✅ | ❌（Nagi 不暴露） |
+| mine / follow 模式 | ✅ | ❌ 自动降级为 idle |
+| 批量浇水 | ✅ | ❌ 返回不支持（逐格处理） |
+| 商店/节日/小游戏 | ❌ | ✅ |
+
+回退：把 `game_loop.backend` 改回 `"stardew"` 重启机器人即可，同伴路线完整保留。
+
+验证：
+
+```bash
+python3 test_game_backend.py        # 字段归一化 / 动作映射 / 模式降级（离线）
+```
+
 ## 后续
 
 `game_loop.py` 现在还在用 `mcp__stardew__*`。迁移路径：把候选动作生成里的

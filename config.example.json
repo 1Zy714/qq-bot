@@ -6,6 +6,15 @@
   "ollama_base": "http://127.0.0.1:11434/v1",
   "model": "qwen3.8-27b-local:latest",
 
+  "agent_backend": "local",
+  "_comment_agent_backend": "local=直连模型（默认）；dsh=官方 dsh agent（需要 pip install deepseek-harness-sdk，且本地 provider 已配置）",
+  "dsh_provider": "local-qwen",
+  "dsh_model": "qwen3.8-flash-next-iq2_xs",
+  "dsh_home": "",
+  "dsh_cwd": "",
+  "dsh_patch": "",
+  "dsh_timeout": 600,
+
   "system_prompt": "你是 QQ 群里的本地小助手，名字叫小千。用中文口语回答，最多两三句话，不要 Markdown、不要编号列表。不知道就直说不知道，不要编。",
   "max_tokens": 160,
   "temperature": 0.7,
@@ -117,6 +126,17 @@
   "growth_allow_private": true,
   "growth_allow_groups": [],
   "growth_owner_openids": [],
+
+  "_comment_game": "自主游戏循环。backend: stardew=操作同伴 NPC（MCP 文件桥，玩家照常玩）/ nagi=NagiBridge HTTP，直接接管玩家本人（会动主人自己的角色！）。nagi 路线只支持 farm / fish(鱼bot) / idle，mine 与 follow 没有对等能力，会自动降级成 idle。companion 只在 stardew 路线用",
+  "game_loop": {
+    "enabled": false,
+    "backend": "stardew",
+    "interval_seconds": 60,
+    "companion": "Dafeiyu",
+    "nagi_base": "http://localhost:7842",
+    "report_user": "",
+    "report_group": ""
+  },
 
   "_comment_qq": "官方开放平台路线用；也可用环境变量 QQ_APPID / QQ_SECRET 覆盖",
   "qq_appid": "",

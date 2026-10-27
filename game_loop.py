@@ -89,7 +89,8 @@ class GameLoop:
     def __init__(self, client: Any, model: Any, mcp_servers: list[dict[str, Any]],
                  report_target: dict[str, str] | None = None,
                  interval: float = DEFAULT_INTERVAL,
-                 companion: str = DEFAULT_COMPANION, log: Any = None) -> None:
+                 companion: str = DEFAULT_COMPANION, log: Any = None,
+                 backend: str = "stardew", values: dict[str, Any] | None = None) -> None:
         self.client = client
         self.model = model
         self.mcp_servers = mcp_servers or []
@@ -101,6 +102,10 @@ class GameLoop:
         self._last_report: dict[str, float] = {}
         self._current_mode = ""
         self.trigger = EventTrigger()
+        # 两种「身体」：stardew=同伴 NPC（文件桥，玩家照常玩）；
+        # nagi=直接驾驶玩家本人（HTTP）。见 game_backend.py。
+        from game_backend import make_backend
+        self.backend = make_backend(backend, companion=self.companion, values=values, log=self.log)
         self.done = {"harvest": 0, "water": 0, "clear": 0}
         self.failures: dict[tuple[str, int, int], int] = {}
         self._player_mode_warned = False
@@ -137,31 +142,7 @@ class GameLoop:
     # ---- 观察 ----
 
     async def _observe(self) -> tuple[dict, list[dict]] | None:
-        from mcp_bridge import call_tool
-        raw = await call_tool("mcp__stardew__stardew_get_state", {})
-        if not raw or raw.lstrip().startswith('{"error"'):
-            return None
-        try:
-            state = json.loads(raw)
-        except Exception:  # noqa: BLE001
-            return None
-        comps = state.get("companions") or []
-        if not comps:
-            return None
-        self.companion = str(comps[0].get("name") or self.companion)
-
-        sur = await call_tool("mcp__stardew__stardew_get_surroundings",
-                              {"companion": self.companion})
-        tiles: list[dict] = []
-        if sur and "surroundings" in str(sur):
-            try:
-                tiles = (json.loads(sur).get("surroundings") or {}).get("tiles") or []
-            except Exception:  # noqa: BLE001
-                tiles = []
-        elif not self._player_mode_warned:
-            self._player_mode_warned = True
-            self.log("[game] 暂时拿不到周围数据（不在 player 模式）")
-        return state, tiles
+        return await self.backend.observe()
 
     # ---- 现场候选 ----
 
@@ -194,10 +175,11 @@ class GameLoop:
     # ---- 一轮 ----
 
     async def _tick(self) -> None:
-        from mcp_bridge import ensure_servers, tool_schemas
-        await ensure_servers(self.mcp_servers)
-        if not tool_schemas():
-            return
+        if self.backend.kind == "stardew":
+            from mcp_bridge import ensure_servers, tool_schemas
+            await ensure_servers(self.mcp_servers)
+            if not tool_schemas():
+                return
         observed = await self._observe()
         if observed is None:
             return
@@ -237,40 +219,30 @@ class GameLoop:
 
     async def _sync_location(self, state: dict) -> None:
         """把伙伴传送到玩家所在场景（否则她会被冻结在别的场景里）。"""
-        from mcp_bridge import call_tool
-
         loc = str(state.get("location") or "")
         if not loc:
             return
         pos = (state.get("player") or {}).get("position") or {}
         px, py = int(pos.get("x", 0) // 64), int(pos.get("y", 0) // 64)
-        await call_tool(
-            "mcp__stardew__stardew_warp_companion",
-            {"companion": self.companion, "location": loc, "x": px + 1, "y": py},
-        )
+        await self.backend.warp(loc, px + 1, py)
         self.log("[game] %s 不在玩家场景，传送到 %s (%d,%d)", self.companion, loc, px, py)
 
     async def _ensure_player_mode(self) -> None:
-        from mcp_bridge import call_tool
+        ensure = getattr(self.backend, "ensure_player_mode", None)
+        if ensure is None:
+            return  # nagi 后端本来就在观察玩家，不需要切模式
         if self._current_mode == "player":
             return
-        await call_tool("mcp__stardew__stardew_set_mode",
-                        {"target": self.companion, "mode": "player"})
+        await ensure()
         self._current_mode = "player"
-        self.log("[game] 切到 player 模式以获取周围数据")
 
     async def _do_tile_action(self, comp: dict, cand: dict[str, Any]) -> None:
-        from mcp_bridge import call_tool
         kind, x, y, dist = cand["kind"], cand["x"], cand["y"], cand["dist"]
         if dist > 1:
-            await call_tool("mcp__stardew__stardew_move_to",
-                            {"companion": self.companion, "x": x, "y": y})
+            await self.backend.move_to(x, y)
             self.log("[game] 靠近 (%d,%d) 去干 %s", x, y, kind)
             return
-        action_type = TILE_ACTION.get(kind, "water")
-        result = await call_tool("mcp__stardew__stardew_action",
-                                 {"actionType": action_type, "x": x, "y": y})
-        ok = "Command sent" in str(result) or "success" in str(result).lower()
+        ok, result = await self.backend.act(kind, x, y)
         bucket = "harvest" if kind == "harvest" else ("water" if kind == "water" else "clear")
         if ok:
             self.done[bucket] += 1
@@ -364,19 +336,21 @@ class GameLoop:
         return {"action": action, "report": report}
 
     async def _apply_mode(self, action: str, report: str) -> None:
-        from mcp_bridge import call_tool
         if action not in ALLOWED_ACTIONS:
             return
         if action in STRATEGY_MODES:
-            await call_tool("mcp__stardew__stardew_set_mode",
-                            {"target": self.companion, "mode": action})
+            supported = await self.backend.set_mode(action)
+            if not supported:
+                self.log("[game] 后端(%s)不支持模式 %s，退回 idle", self.backend.kind, action)
+                await self.backend.set_mode("idle")
+                action = "idle"
             changed = action != self._current_mode
             self._current_mode = action
             self.log("[game] 模式 → %s", action)
         else:
-            await call_tool(f"mcp__stardew__stardew_{action}", {})
+            ok = await self.backend.instant(action)
             changed = False
-            self.log("[game] 执行 %s", action)
+            self.log("[game] 执行 %s：%s", action, "成功" if ok else "不支持或失败")
         if not report:
             report = DEFAULT_REPORTS.get(action, "")
         if not report:

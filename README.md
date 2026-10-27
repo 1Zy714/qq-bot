@@ -137,6 +137,34 @@ bash ~/qq-bot/svc.sh log   official     # 实时日志
 > **默认全关**：配置 `auto_chat.enabled` 打开，建议先 `dry_run` 跑一天看命中率。
 > 全量群消息的开关在**手机 QQ → 群设置 → 机器人设置**，不是开放平台后台。
 
+### 3. dsh agent 后端（可选）
+
+把「模型直连」换成「官方 dsh agent」：QQ 消息仍由本进程收发，但每一轮交给
+`--profile sdk` 的 DeepSeek Harness agent，获得 dsh 的工具、工作区和会话压缩。
+
+```bash
+~/.venvs/qqbot/bin/pip install -i https://pypi.tuna.tsinghua.edu.cn/simple deepseek-harness-sdk
+```
+
+然后在 `config.json` 里改：
+
+```json
+"agent_backend": "dsh",
+"dsh_provider": "local-qwen",
+"dsh_model": "qwen3.8-flash-next-iq2_xs",
+"dsh_patch": "dsh-qq.patch.yml",
+"dsh_timeout": 600
+```
+
+- 每个 QQ 会话（私聊 openid / 群号 + 发言人）映射一个持久 dsh Session，人设在第一轮注入一次。
+- `dsh-qq.patch.yml` 不存在时自动生成，把 `llm-pi-ai` 指到 `127.0.0.1:8080/v1` 的本地 Strata；
+  想用云端就把它删掉，并把 `dsh_provider` / `dsh_model` 改成 `deepseek-official` / `deepseek-flash`。
+- `dsh_home` / `dsh_cwd` 默认在项目下的 `.dsh-qq-home` / `agent-workspace`（已 gitignore）。
+- **注意**：dsh 后端下 qq-bot 自己的 `web_tools` / `tools_enabled` 不参与——工具由 dsh 提供。
+- ⚠️ **dsh agent 带 bash / 文件读写工具**：群聊里任何人 @ 都可能触发。建议只在小号测试群使用，
+  或把 `dsh_cwd` 指到专用目录；不要用主号，也不要把工作区指到你的项目目录。
+- 验证：`~/.venvs/qqbot/bin/python official_bot.py --selftest`（会显示人设与一次真实回答）。
+
 ---
 
 ## 配置说明（`config.json`）
@@ -159,7 +187,11 @@ bash ~/qq-bot/svc.sh log   official     # 实时日志
 | `group_cooldown_seconds` | `5.0` | 同群冷却 |
 | `reply_with_at` | `true` | 群回复是否带 @ |
 | `reset_words` | `["重置","reset","清空"]` | 清空当前会话上下文 |
-| `tools_enabled` | `true` | 关掉就退回纯聊天 |
+| `tools_enabled` | `true` | 关掉就退回纯聊天（dsh 后端下无效） |
+| `agent_backend` | `local` | `local` 直连模型；`dsh` 走 dsh agent |
+| `dsh_provider` / `dsh_model` | `local-qwen` / `qwen3.8-flash-next-iq2_xs` | dsh 后端的 provider 与模型 |
+| `dsh_home` / `dsh_cwd` | 项目内 | dsh SDK 的 Harness home 与 agent 工作目录 |
+| `dsh_timeout` | `600` | dsh 单轮超时（秒） |
 
 ---
 

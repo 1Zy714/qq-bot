@@ -31,6 +31,13 @@ backups/
 #   ↑ README 一直声称「backups 已被 .gitignore 挡住」，此前其实只挡住了
 #     `config.json.bak*`，`backups/official_bot.py.*.bak` 之类的仍会被提交。
 
+# ---- dsh agent 运行数据（agent_backend=dsh 时）----
+.dsh-qq-home/
+agent-workspace/
+dsh-qq.patch.yml
+#   ↑ dsh SDK 的独立 Harness home、agent 工作目录与自动生成的 provider patch，
+#     都随机器不同而不同，不提交。
+
 # ---- Python ----
 __pycache__/
 *.py[cod]
