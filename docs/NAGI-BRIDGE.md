@@ -182,6 +182,47 @@ python3 test_game_backend.py        # 字段归一化 / 动作映射 / 模式降
 "game_loop": { "budget": { "max_actions": 80, "max_model_calls": 40, "max_minutes": 45 } }
 ```
 
+## 在 DSH 侧挂 MCP（agent_backend=dsh 时必做）
+
+`agent_backend=dsh` 时，模型请求由 DSH 的 sdk runtime 发出，**机器人自带的
+`chat_with_tools` 循环被绕过**——MCP 虽然连着，但模型看不到工具，表现就是
+「她说工具没接上」。要在 DSH 里用工具，得把 MCP 注册进 DSH 的 profile。
+
+两点写法：
+
+1. **新条目必须放在 `insert:` 列表**里：
+
+```yaml
+- insert:
+    - id: mcp-nagi
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: nagi
+        transport: stdio
+        command: /home/lzy959/.venvs/qqbot/bin/python
+        args: [/home/lzy959/qq-bot/tools/nagi_mcp.py]
+        env: { NAGI_BASE: "http://localhost:7842" }
+        failOnStartupError: false
+```
+
+2. **走 Windows 进程的 MCP 必须设 `WSLENV`**（stardew 那条用 `/mnt/c/.../node.exe`）。
+   WSL 不会把环境变量透传给 Windows 进程，不登记就收不到路径，症状是
+   `Bridge file not found. Is the SMAPI mod running?`：
+
+```yaml
+env:
+  STARDEW_BRIDGE_PATH: "Z:/.../bridge_data.json"
+  STARDEW_ACTION_DIR: "Z:/.../actions"
+  WSLENV: "STARDEW_BRIDGE_PATH:STARDEW_ACTION_DIR"
+```
+
+改完要重启机器人（`bash svc.sh restart official`）。验证：直接问 DshAgent
+「用工具确认游戏状态」，看它是否报出 `mcp__nagi__status` 和
+`mcp__stardew__stardew_get_state` 的返回。
+
+> ⚠️ 工具进了 DSH 之后**没有权限门**：群里任何人发消息都可能让它 `/move`、
+> `/harvest` 甚至调游戏类工具。要收紧就往 DSH 侧加白名单/审批，或只在私聊挂工具。
+
 ## 后续
 
 `game_loop.py` 现在还在用 `mcp__stardew__*`。迁移路径：把候选动作生成里的
