@@ -302,20 +302,14 @@ class GameLoop:
             "<report>不超过 25 字、带大肥鱼语气；没事就留空</report>"
         )
         try:
-            cfg = self.model.cfg
-            url = str(cfg.ollama_base).rstrip("/") + "/chat/completions"
-            payload = {
-                "model": cfg.model,
-                "messages": [
-                    {"role": "system", "content": "你是大肥鱼。只输出指定的两行标签，不要解释。"},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 120, "temperature": 0.7,
-                "stream": False, "reasoning_effort": "none",
-            }
-            response = await self.model.client.post(url, json=payload, timeout=300.0)
-            response.raise_for_status()
-            reply = str((response.json()["choices"][0]["message"] or {}).get("content") or "")
+            # 统一走 model.ask：LocalModel 和 DshAgent 都有这个接口。
+            # 早先这里直接拼 ollama_base + model.client，换上 DSH 后端就会炸
+            # （DshAgent 没有 .client），战略层因此静默失效。
+            reply = await self.model.ask(
+                "game:strategy",
+                prompt,
+                system_suffix="你只输出指定的两行标签，不要解释。",
+            )
         except Exception as error:  # noqa: BLE001
             self.log("[game] 战略决策失败：%s: %s", type(error).__name__, error)
             return None

@@ -155,6 +155,14 @@ GameLoop(..., backend="nagi")      # Nagi HTTP，接管玩家本人
 
 回退：把 `game_loop.backend` 改回 `"stardew"` 重启机器人即可，同伴路线完整保留。
 
+### 两个运行前提（踩过）
+
+1. **游戏窗口必须有焦点**：星露谷失焦即暂停，世界时间不走，`/warp`、`/move` 会「成功但没发生」。
+   实测时间戳停在 6:00 不动就是它。把窗口点到前台后立刻恢复。
+2. **战略层走 `model.ask()`**：早先直接拼 `ollama_base + model.client`，在 DSH 后端下会报
+   `DshAgent has no attribute 'client'` 而静默失效。现在两条后端都走统一接口；
+   模型没起时战略层失败但本地候选（收/浇/清）照常工作。
+
 验证：
 
 ```bash

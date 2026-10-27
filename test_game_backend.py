@@ -171,6 +171,26 @@ def test_instant_and_factory() -> None:
           "http://localhost:9")
 
 
+def test_strategy_model() -> None:
+    print("\n[5] 战略决策走 model.ask（不再依赖 .client）")
+    import game_loop as gl
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def ask(self, session, prompt, system_suffix=""):
+            self.calls.append((session, system_suffix))
+            return "<action>farm</action>\n<report>去农场</report>"
+
+    model = FakeModel()
+    loop = gl.GameLoop(client=None, model=model, mcp_servers=[], backend="nagi")
+    decision = asyncio.run(loop._decide_strategy({"time": 700, "location": "Farm"}))
+    check("解析出动作", decision["action"], "farm")
+    check("走的是 model.ask", model.calls and model.calls[0][0], "game:strategy")
+    check("带标签约束", "只输出" in model.calls[0][1], True)
+
+
 def main() -> int:
     print("=" * 60)
     print("游戏后端抽象 离线单测")
@@ -178,6 +198,7 @@ def main() -> int:
     test_actions()
     test_modes()
     test_instant_and_factory()
+    test_strategy_model()
     print("\n" + "=" * 60)
     if FAILURES:
         print(f"✗ {len(FAILURES)} 项失败：")
