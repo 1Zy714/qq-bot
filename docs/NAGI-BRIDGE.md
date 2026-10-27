@@ -223,6 +223,26 @@ env:
 > ⚠️ 工具进了 DSH 之后**没有权限门**：群里任何人发消息都可能让它 `/move`、
 > `/harvest` 甚至调游戏类工具。要收紧就往 DSH 侧加白名单/审批，或只在私聊挂工具。
 
+### 聊天延迟与工具安全（2026-10-27 实测）
+
+DSH 的 agent profile 默认挂整套工具（bash / 文件读写 / 子 agent / workflow），
+QQ 聊天时模型会去翻工作区，回复从秒级拖到 10~20 秒，而且**群里任何人都能诱导它执行命令**。
+机器人只需要「聊天 + 游戏操作」，所以：
+
+1. **关掉无关工具**（在 `dsh-qq.patch.yml` 里逐个 `disabled: true`）：
+   `tool-bash` `tool-pwsh` `tool-fs` `tool-fs-search` `tool-jobs`
+   `tool-subagent*` `tool-workflow` `tool-todo` `tool-goal` `tool-web`
+   `bash-sandbox` `shell-env`
+2. **游戏没开就不挂载游戏 MCP**：`tools/gate-nagi.sh`（curl 探活）、
+   `tools/gate-stardew.sh`（看 bridge_data.json 是不是 2 分钟内更新过）。
+   游戏关着时 DSH 侧没有游戏工具，自然不会白跑「调工具失败」的回合。
+3. **限 token 与超时**：`dsh_max_tokens` 默认 1024、`dsh_timeout` 默认 180。
+
+实测（游戏关着）：回复 **22.7s → 6.6s**、**11.2s → 4.8s**；工具清单只剩
+`working_directory` / `skill` / MCP 资源读取 / `exit_plan_mode`。
+
+> 游戏重新打开后，要让游戏 MCP 生效需要**重启机器人**（MCP 在启动时挂载）。
+
 ## 后续
 
 `game_loop.py` 现在还在用 `mcp__stardew__*`。迁移路径：把候选动作生成里的

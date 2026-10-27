@@ -90,6 +90,10 @@ class DshAgent:
             home.mkdir(parents=True, exist_ok=True)
             cwd.mkdir(parents=True, exist_ok=True)
             env = {"LOCAL_LLM_KEY": os.environ.get("LOCAL_LLM_KEY", "sk-local")}
+            extra = {}
+            effort = self._get("dsh_reasoning_effort", "")
+            if effort:
+                extra["reasoning_effort"] = str(effort)
             self._harness = DeepSeekHarness(
                 dsh_home=str(home),
                 cwd=str(cwd),
@@ -97,7 +101,10 @@ class DshAgent:
                 model=str(self._get("dsh_model", "qwen3.8-flash-next-iq2_xs")),
                 patches=self._resolve_patch(),
                 env=env,
-                request_timeout_seconds=float(self._get("dsh_timeout", 600) or 600),
+                # 聊天场景不需要超长回答；给个上限能明显压掉跑飞时的等待
+                max_tokens=int(self._get("dsh_max_tokens", 1024) or 1024),
+                request_timeout_seconds=float(self._get("dsh_timeout", 180) or 180),
+                **extra,
             )
         return self._harness
 
