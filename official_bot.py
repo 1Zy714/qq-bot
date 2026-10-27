@@ -67,6 +67,7 @@ from user_memory import (  # noqa: E402  按 openid 记住每个人（与协议�
     parse_memory_marker,
 )
 from cross_session import CrossSessionLog  # noqa: E402  跨会话摘要（读时现算，不落盘）
+from memory_search import MemorySearch, parse_recall  # noqa: E402  按需记忆检索
 from growth_log import GrowthLog, parse_growth_marker  # noqa: E402  只追加的成长附录
 from msg_guard import MessageDedup, SendGuard  # noqa: E402  消息去重 + 发送熔断
 
@@ -1060,6 +1061,11 @@ class Responder:
         if bool(cfg.values.get("cross_session_enabled", True)):
             self.cross = CrossSessionLog()
         self.cross_max_chars = int(cfg.values.get("cross_session_max_chars", 700))
+        # 按需检索：用户写 [回忆:关键词] 才查，避免每轮多一次查询
+        self.recall: MemorySearch | None = None
+        if bool(cfg.values.get("memory_search_enabled", True)):
+            self.recall = MemorySearch(HERE / "memory")
+        self.recall_max_chars = int(cfg.values.get("memory_search_max_chars", 600))
         # 成长附录：只追加 + 哈希链；链断时停止注入、也拒绝继续写
         self.growth: GrowthLog | None = None
         if bool(cfg.values.get("growth_enabled", True)):
@@ -1262,6 +1268,18 @@ class Responder:
                     await self._answer_image(session, action, sender, image_sender)
                 return
 
+        # [回忆:关键词] → 现算检索块。标记要从正文里摘掉，不能漏进对话。
+        recall_block = ""
+        prompt, recall_query = parse_recall(prompt)
+        if recall_query and self.recall is not None:
+            recall_block = self.recall.digest(
+                recall_query, max_chars=min(self.recall_max_chars, int(self.cfg.max_prompt_chars) // 2)
+            )
+            if recall_block:
+                LOG.info("[qq] 记忆检索「%s」命中 %d 条", recall_query, recall_block.count("\n- ["))
+            else:
+                LOG.info("[qq] 记忆检索「%s」没有命中", recall_query)
+
         # 记账 + 给提问打上发言人标签。
         # 标签放在 **user 消息**里而不是 system 里：system 要逐字稳定，
         # 前缀缓存才命中；user 消息本来每条都是新的，加多少都不会亏。
@@ -1275,7 +1293,7 @@ class Responder:
         cross_block = ""
         if self.cross is not None and speaker is not None:
             name = profile.display if profile is not None else speaker.name
-            budget = int(self.cfg.max_prompt_chars) - len(prompt) - 40
+            budget = int(self.cfg.max_prompt_chars) - len(prompt) - len(recall_block) - 40
             if budget > 80:
                 cross_block = self.cross.digest(
                     session,
@@ -1289,6 +1307,8 @@ class Responder:
             # 不分主客：群里一律【群友】，单聊一律【私聊】
             scene = "群友" if speaker.scene == "group" else "私聊"
             prompt = f"[{scene} {profile.display}] {prompt}"
+        if recall_block:
+            prompt = f"{prompt}{recall_block}"
         if cross_block:
             prompt = f"{prompt}{cross_block}"
 

@@ -29,6 +29,7 @@
 | [LEARNING.md](LEARNING.md) | 认人记忆与学习机制（1109 行，最详尽的一篇） |
 | [SUMMARY-GROWTH.md](SUMMARY-GROWTH.md) | 跨会话摘要（记得住不越界）+ 成长附录（只准往后写的哈希链本子） |
 | [NAGI-BRIDGE.md](NAGI-BRIDGE.md) | 星露谷第二身体：NagiBridge HTTP → MCP 薄封装（28 个工具） |
+| [MEMORY-SEARCH.md](MEMORY-SEARCH.md) | 记忆按需检索：`[回忆:关键词]` 标记，命中注入 ≤600 字证据 |
 
 ### 图像相关
 
