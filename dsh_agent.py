@@ -25,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -116,9 +117,9 @@ class DshAgent:
                 pass
         return str(self._values.get("system_prompt", "") or "")
 
-    def _run(self, key: str, prompt: str) -> str:
+    def _run(self, key: str, prompt: str, session_id: str | None = None) -> str:
         harness = self._harness_for()
-        session_id = self._session_id(key)
+        session_id = session_id or self._session_id(key)
         text = prompt
         if key not in self._greeted:
             system = self._system_prompt().strip()
@@ -143,6 +144,13 @@ class DshAgent:
             async with self._lock:
                 text = f"{prompt}\n\n【本轮补充】{system_suffix}" if system_suffix else prompt
                 reply = await asyncio.to_thread(self._run, session, text)
+                if not reply.strip():
+                    # 长命会话可能因历史/工具消息堆积而吐不出正文：换新会话重试一次。
+                    # 触发过空正文的会话不再复用，避免下一轮继续卡在同一处。
+                    fresh_key = f"{session}#fresh{int(time.time())}"
+                    self._sessions[session] = self._session_id(fresh_key)
+                    self._greeted.discard(session)
+                    reply = await asyncio.to_thread(self._run, fresh_key, text)
                 if not reply.strip():
                     raise RuntimeError("dsh agent 返回空正文")
                 return reply
