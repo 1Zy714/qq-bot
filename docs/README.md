@@ -28,6 +28,7 @@
 | [TOOLS.md](TOOLS.md) | 联网工具（新闻 / 热榜 / 搜索 / 天气 / 时间 / 表情） |
 | [LEARNING.md](LEARNING.md) | 认人记忆与学习机制（1109 行，最详尽的一篇） |
 | [SUMMARY-GROWTH.md](SUMMARY-GROWTH.md) | 跨会话摘要（记得住不越界）+ 成长附录（只准往后写的哈希链本子） |
+| [NAGI-BRIDGE.md](NAGI-BRIDGE.md) | 星露谷第二身体：NagiBridge HTTP → MCP 薄封装（28 个工具） |
 
 ### 图像相关
 
