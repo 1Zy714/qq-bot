@@ -16,6 +16,12 @@
 | **[LEARN-CODE-WALK.md](LEARN-CODE-WALK.md)** | 代码精读：带真实行号，从 main 走到游戏循环与记忆 |
 | **[LEARN-EXERCISES.md](LEARN-EXERCISES.md)** | 练习册：L1~L5，每题有验收标准与提示 |
 
+## 研究笔记
+
+| 位置 | 内容 |
+|---|---|
+| [research/](research/README.md) | 决策前的调研：DSH 插件、游戏 AI、记忆方案、图像识别、工作记录 |
+
 ## 一、先读这三篇（上手 / 交接）
 
 | 文档 | 讲什么 |

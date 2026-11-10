@@ -25,6 +25,26 @@
 
 ---
 
+## 最近变化（2026-11）
+
+| 能力 | 说明 | 文档 |
+|---|---|---|
+| **DSH agent 后端** | `agent_backend=dsh`：模型调用走官方 SDK，能带 DSH 的会话与工具 | [DSH-BRIDGE.md](docs/DSH-BRIDGE.md) |
+| **聊天提速** | 裁掉 agent 无关工具后 22.7s → 6.6s；限 token/超时 | [CHAT-PERF.md](docs/CHAT-PERF.md) |
+| **按需记忆** | `[回忆:关键词]` 显式检索 + 「上次/之前」自动触发；写入合并、180 天淘汰、每日整理 | [MEMORY-SEARCH.md](docs/MEMORY-SEARCH.md) |
+| **游戏双后端** | 同伴 NPC（MCP）与玩家自动驾驶（NagiBridge）可切换；动作核验 + 预算 | [GAME-BACKEND.md](docs/GAME-BACKEND.md) |
+| **游戏工具门控** | 游戏没开就不挂载（机器人侧健康检查 + DSH 侧 gate 脚本） | [NAGI-BRIDGE.md](docs/NAGI-BRIDGE.md) |
+
+**学习入口**（结合真实代码）：
+
+- [LEARN.md](docs/LEARN.md) —— 7 天 / 14 天路线
+- [LEARN-ARCHITECTURE.md](docs/LEARN-ARCHITECTURE.md) / [LEARN-CODE-WALK.md](docs/LEARN-CODE-WALK.md) / [LEARN-EXERCISES.md](docs/LEARN-EXERCISES.md)
+- [LEARN-LINUX.md](docs/LEARN-LINUX.md) / [LEARN-PYTHON.md](docs/LEARN-PYTHON.md)
+
+完整文档索引：[docs/README.md](docs/README.md)；调研笔记：[docs/research/](docs/research/README.md)。
+
+---
+
 ## 架构
 
 ```
