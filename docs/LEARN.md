@@ -30,6 +30,14 @@ Python 语法  → 看得懂代码、能加一个小功能
 
 ---
 
+## 二·五、三篇「结合代码」的深入文档
+
+| 文档 | 内容 |
+|---|---|
+| [LEARN-ARCHITECTURE.md](LEARN-ARCHITECTURE.md) | 架构地图：一个 QQ 消息如何变成回复、模块职责表、三条数据流 |
+| [LEARN-CODE-WALK.md](LEARN-CODE-WALK.md) | 代码精读：按真实行号走一遍 `main → answer → 发消息 → 游戏/记忆` |
+| [LEARN-EXERCISES.md](LEARN-EXERCISES.md) | 练习册：L1 找东西 → L5 挑战，每题有验收标准和提示行号 |
+
 ## 三、想更深入（14 天版）
 
 在 7 天版基础上加：

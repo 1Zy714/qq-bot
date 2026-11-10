@@ -12,6 +12,9 @@
 | **[LEARN.md](LEARN.md)** | ⭐ 学习路线总入口：7 天 / 14 天计划、练习与排障顺序 |
 | **[LEARN-LINUX.md](LEARN-LINUX.md)** | Linux 命令入门：进程 / 端口 / 日志 / 文件，全用本项目命令 |
 | **[LEARN-PYTHON.md](LEARN-PYTHON.md)** | Python 入门：从变量到 async，例子全来自本项目代码 |
+| **[LEARN-ARCHITECTURE.md](LEARN-ARCHITECTURE.md)** | 架构导读：一条消息的完整链路、模块职责、三条数据流 |
+| **[LEARN-CODE-WALK.md](LEARN-CODE-WALK.md)** | 代码精读：带真实行号，从 main 走到游戏循环与记忆 |
+| **[LEARN-EXERCISES.md](LEARN-EXERCISES.md)** | 练习册：L1~L5，每题有验收标准与提示 |
 
 ## 一、先读这三篇（上手 / 交接）
 
