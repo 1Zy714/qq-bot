@@ -21,6 +21,10 @@ Python 语法  → 看得懂代码、能加一个小功能
 用 **[LEARN-PLAN-1H.md](LEARN-PLAN-1H.md)**：12 周路线（Linux → Python → 项目 → AI），
 每周 5 天、每天 60 分钟，每周一个可验证的小成果。
 
+## 一·六、能力地图版路线
+
+想看「要具备哪些能力、怎么自评、Java 经验怎么迁移」→ [LEARN-ROADMAP.md](LEARN-ROADMAP.md)。
+
 ## 二、推荐路线（7 天版）
 
 | 天 | 学什么 | 用什么练 | 文档 |
