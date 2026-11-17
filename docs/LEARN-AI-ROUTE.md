@@ -1,5 +1,7 @@
 # AI 专项学习路线（结合 qq-bot，8 周）
 
+> **逐日讲义版**在 [ai-course/](ai-course/README.md)：命令、代码骨架、预期输出与验收清单都写全了。
+>
 > 前提：Python 能看懂（[LEARN-PYTHON.md](LEARN-PYTHON.md) 前 12 节），项目能跑起来。
 > 节奏：每周 5 天 × 1 小时，**每周一个可验证产出**。概念底子看 [LEARN-AI-BASICS.md](LEARN-AI-BASICS.md)。
 > 结束时你应该能：**独立把一个新的外部能力接进这个机器人**（工具 + 记忆 + 评估 + 文档）。

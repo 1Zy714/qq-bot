@@ -18,6 +18,7 @@
 | **[LEARN-EXERCISES.md](LEARN-EXERCISES.md)** | 练习册：L1~L5，每题有验收标准与提示 |
 | **[LEARN-AI-BASICS.md](LEARN-AI-BASICS.md)** | AI 基础：token/上下文/工具调用/Agent/RAG + 面试常问 |
 | **[LEARN-AI-ROUTE.md](LEARN-AI-ROUTE.md)** | ⭐ AI 专项 8 周实战路线（每周产出，最终接一个新能力进机器人） |
+| **[ai-course/](ai-course/README.md)** | ⭐ 8 周逐日讲义：命令、代码骨架、验收清单（可直接照着做） |
 
 ## 研究笔记
 
