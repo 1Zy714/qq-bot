@@ -16,6 +16,7 @@
 | **[LEARN-ARCHITECTURE.md](LEARN-ARCHITECTURE.md)** | 架构导读：一条消息的完整链路、模块职责、三条数据流 |
 | **[LEARN-CODE-WALK.md](LEARN-CODE-WALK.md)** | 代码精读：带真实行号，从 main 走到游戏循环与记忆 |
 | **[LEARN-EXERCISES.md](LEARN-EXERCISES.md)** | 练习册：L1~L5，每题有验收标准与提示 |
+| **[LEARN-AI-BASICS.md](LEARN-AI-BASICS.md)** | AI 基础：token/上下文/工具调用/Agent/RAG + 面试常问 |
 
 ## 研究笔记
 

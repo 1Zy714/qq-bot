@@ -46,6 +46,7 @@ Python 语法  → 看得懂代码、能加一个小功能
 | [LEARN-ARCHITECTURE.md](LEARN-ARCHITECTURE.md) | 架构地图：一个 QQ 消息如何变成回复、模块职责表、三条数据流 |
 | [LEARN-CODE-WALK.md](LEARN-CODE-WALK.md) | 代码精读：按真实行号走一遍 `main → answer → 发消息 → 游戏/记忆` |
 | [LEARN-EXERCISES.md](LEARN-EXERCISES.md) | 练习册：L1 找东西 → L5 挑战，每题有验收标准和提示行号 |
+| [LEARN-AI-BASICS.md](LEARN-AI-BASICS.md) | AI 基础知识：token/上下文/工具调用/Agent/RAG，概念对应到项目代码 |
 
 ## 三、想更深入（14 天版）
 
