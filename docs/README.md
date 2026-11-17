@@ -10,6 +10,7 @@
 | 文档 | 讲什么 |
 |---|---|
 | **[LEARN.md](LEARN.md)** | ⭐ 学习路线总入口：7 天 / 14 天计划、练习与排障顺序 |
+| **[LEARN-PLAN-1H.md](LEARN-PLAN-1H.md)** | ⭐ 每天 1 小时 · 12 周路线（Linux → Python → 项目 → AI），每周有成果 |
 | **[LEARN-LINUX.md](LEARN-LINUX.md)** | Linux 命令入门：进程 / 端口 / 日志 / 文件，全用本项目命令 |
 | **[LEARN-PYTHON.md](LEARN-PYTHON.md)** | Python 入门：从变量到 async，例子全来自本项目代码 |
 | **[LEARN-ARCHITECTURE.md](LEARN-ARCHITECTURE.md)** | 架构导读：一条消息的完整链路、模块职责、三条数据流 |
