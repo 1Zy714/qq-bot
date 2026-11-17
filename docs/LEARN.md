@@ -47,6 +47,7 @@ Python 语法  → 看得懂代码、能加一个小功能
 | [LEARN-CODE-WALK.md](LEARN-CODE-WALK.md) | 代码精读：按真实行号走一遍 `main → answer → 发消息 → 游戏/记忆` |
 | [LEARN-EXERCISES.md](LEARN-EXERCISES.md) | 练习册：L1 找东西 → L5 挑战，每题有验收标准和提示行号 |
 | [LEARN-AI-BASICS.md](LEARN-AI-BASICS.md) | AI 基础知识：token/上下文/工具调用/Agent/RAG，概念对应到项目代码 |
+| [LEARN-AI-ROUTE.md](LEARN-AI-ROUTE.md) | ⭐ AI 专项 8 周路线（结合本项目）：每周一个产出的实战计划 |
 
 ## 三、想更深入（14 天版）
 
